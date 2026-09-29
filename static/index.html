@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#122526">
+  <title>COC7 调查员车卡器</title>
+  <link rel="icon" href="data:,">
+  <script src="/static/theme.js"></script>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/currency.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="boot-screen" id="boot-screen" aria-live="polite">
+    <div class="boot-seal">C7</div>
+    <p>正在载入调查员资料……</p>
+  </div>
+
+  <div class="app-frame" id="app-frame" hidden>
+    <header class="topbar">
+      <a class="brand" href="#" id="brand-home" aria-label="返回调查员信息">
+        <span class="brand-mark">C7</span>
+        <span>
+          <strong>coc7车卡器</strong>
+        </span>
+      </a>
+      <div class="topbar-status">
+        <label class="theme-control" for="theme-select">
+          <span>外观</span>
+          <select id="theme-select" aria-label="外观">
+            <option value="system">跟随系统</option>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </label>
+        <span class="save-state" id="save-state">会话已保存</span>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="step-sidebar">
+        <div class="progress-emblem" id="progress-emblem">
+          <div class="progress-inner">
+            <strong id="progress-percent">14%</strong>
+            <span>建卡进度</span>
+          </div>
+        </div>
+        <nav class="step-nav" aria-label="车卡步骤">
+          <button class="step-link active" data-step-target="0"><span>01</span><b>调查员信息</b></button>
+          <button class="step-link" data-step-target="1"><span>02</span><b>最终属性</b></button>
+          <button class="step-link" data-step-target="2"><span>03</span><b>职业配置</b></button>
+          <button class="step-link" data-step-target="3"><span>04</span><b>技能分配</b></button>
+          <button class="step-link" data-step-target="4"><span>05</span><b>背景资产</b></button>
+          <button class="step-link" data-step-target="5"><span>06</span><b>武器物品</b></button>
+          <button class="step-link" data-step-target="6"><span>07</span><b>检查导出</b></button>
+        </nav>
+        <div class="sidebar-meta">
+          <strong>COC7</strong>
+          <small id="catalog-meta">载入中……</small>
+        </div>
+        <button class="ghost-button danger-text" id="reset-open" type="button">清空当前会话</button>
+      </aside>
+
+      <main class="content-column">
+        <section class="wizard-step active" data-step="0" aria-labelledby="step-0-title">
+          <div class="section-heading identity-heading">
+            <div><h1 id="step-0-title">调查员信息</h1></div>
+            <div class="import-actions">
+              <button type="button" class="text-button" id="import-undo" hidden>撤销导入</button>
+              <button type="button" class="secondary-button" id="import-excel">导入 Excel</button>
+              <input id="import-excel-input" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+            </div>
+            <span class="chapter-number">01</span>
+          </div>
+
+          <div class="paper-card identity-card">
+            <div class="portrait-panel">
+              <label class="portrait-drop" for="portrait-input" id="portrait-drop">
+                <img id="portrait-preview" alt="调查员头像预览" hidden>
+                <span class="portrait-placeholder" id="portrait-placeholder"><b>＋</b><strong>添加头像</strong><small>图片 ≤ 8 MB</small></span>
+              </label>
+              <input id="portrait-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+              <button type="button" class="text-button" id="portrait-remove" hidden>移除头像</button>
+            </div>
+            <div class="identity-fields">
+              <section class="identity-group" aria-labelledby="identity-personal-title">
+                <h2 id="identity-personal-title">身份信息</h2>
+                <div class="form-grid identity-grid">
+                  <label class="field"><span>调查员姓名 <em>必填</em></span><input id="identity-name" autocomplete="off"></label>
+                  <label class="field"><span>玩家名</span><input id="identity-player" autocomplete="off"></label>
+                  <label class="field"><span>年龄</span><input id="identity-age" type="number" min="1" max="120" step="1" value="30"></label>
+                  <label class="field"><span>性别</span><input id="identity-gender" autocomplete="off"></label>
+                </div>
+              </section>
+              <section class="identity-group" aria-labelledby="identity-setting-title">
+                <h2 id="identity-setting-title">生活与时代</h2>
+                <div class="form-grid identity-grid">
+                  <label class="field"><span>居住地</span><input id="identity-residence" autocomplete="off"></label>
+                  <label class="field"><span>出生地</span><input id="identity-birthplace" autocomplete="off"></label>
+                  <label class="field"><span>时代</span><input id="identity-era" autocomplete="off" value="1920s"></label>
+                  <label class="field"><span>故事年份</span><input id="identity-story-year" type="number" min="1920" max="2026" step="1" placeholder="1920—2026"></label>
+                  <label class="field"><span>卡内日期</span><input id="identity-date" type="date"></label>
+                </div>
+              </section>
+            </div>
+          </div>
+
+        </section>
+
+        <section class="wizard-step" data-step="1" aria-labelledby="step-1-title">
+          <div class="section-heading attribute-heading">
+            <div><h1 id="step-1-title">最终属性</h1></div>
+            <div class="import-actions">
+              <button type="button" class="text-button" id="attribute-import-undo" hidden>撤销属性导入</button>
+              <a class="text-button" href="/assets/templates/COC7属性简化表.xlsx" download>简化表模板</a>
+              <button type="button" class="secondary-button" id="import-attributes">导入属性</button>
+              <input id="import-attributes-input" type="file" accept=".xlsx,.csv,.tsv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/tab-separated-values" hidden>
+            </div>
+            <span class="chapter-number">02</span>
+          </div>
+
+          <div class="attribute-grid" id="attribute-grid">
+            <label class="attribute-card"><span>力量</span><b>STR</b><input id="attr-STR" data-attribute="STR" type="number" min="0" max="300" value="50"></label>
+            <label class="attribute-card"><span>体质</span><b>CON</b><input id="attr-CON" data-attribute="CON" type="number" min="0" max="300" value="50"></label>
+            <label class="attribute-card"><span>体型</span><b>SIZ</b><input id="attr-SIZ" data-attribute="SIZ" type="number" min="0" max="300" value="50"></label>
+            <label class="attribute-card"><span>敏捷</span><b>DEX</b><input id="attr-DEX" data-attribute="DEX" type="number" min="0" max="300" value="50"></label>
+            <label class="attribute-card"><span>外貌</span><b>APP</b><input id="attr-APP" data-attribute="APP" type="number" min="0" max="300" value="50"></label>
+            <label class="attribute-card"><span>智力</span><b>INT</b><input id="attr-INT" data-attribute="INT" type="number" min="0" max="300" value="50"></label>
+            <label class="attribute-card"><span>意志</span><b>POW</b><input id="attr-POW" data-attribute="POW" type="number" min="0" max="300" value="50"></label>
+            <label class="attribute-card"><span>教育</span><b>EDU</b><input id="attr-EDU" data-attribute="EDU" type="number" min="0" max="300" value="50"></label>
+            <label class="attribute-card accent"><span>幸运</span><b>Luck</b><input id="attr-Luck" data-attribute="Luck" type="number" min="0" max="300" value="50"></label>
+          </div>
+
+          <label class="switch-row paper-card">
+            <input id="nonstandard-override" type="checkbox">
+            <span class="switch"></span>
+            <span><strong>KP 特批</strong><small>允许超出常规上限</small></span>
+          </label>
+
+          <div class="derived-card paper-card">
+            <div class="card-title"><div><h2>派生属性</h2></div></div>
+            <div class="derived-grid">
+              <div><span>生命值</span><strong id="derived-hp">10</strong><small>HP</small></div>
+              <div><span>魔法值</span><strong id="derived-mp">10</strong><small>MP</small></div>
+              <div><span>理智值</span><strong id="derived-san">50</strong><small>SAN</small></div>
+              <div><span>移动力</span><strong id="derived-mov">8</strong><small>MOV</small></div>
+              <div><span>闪避</span><strong id="derived-dodge">25</strong><small>DEX ÷ 2</small></div>
+              <div><span>伤害加值</span><strong id="derived-damage">0</strong><small>DB</small></div>
+              <div><span>体格</span><strong id="derived-build">0</strong><small>BUILD</small></div>
+              <div><span>兴趣点</span><strong id="derived-interest">100</strong><small>INT × 2</small></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="wizard-step" data-step="2" aria-labelledby="step-2-title">
+          <div class="section-heading">
+            <div><h1 id="step-2-title">职业配置</h1></div>
+            <span class="chapter-number">03</span>
+          </div>
+
+          <div class="segmented-control" role="group" aria-label="职业来源">
+            <button type="button" class="active" data-occupation-mode="catalog">职业目录</button>
+            <button type="button" data-occupation-mode="custom">自定义职业</button>
+          </div>
+
+          <div id="catalog-occupation-panel">
+            <div class="paper-card occupation-picker">
+              <label class="field search-field"><span>筛选职业</span><input id="occupation-search" type="search" placeholder="输入职业名称或关键词"></label>
+              <label class="field"><span>选择职业</span><select id="occupation-select"></select></label>
+            </div>
+            <article class="occupation-profile paper-card">
+              <div class="occupation-profile-head">
+                <div><h2 id="occupation-title">—</h2></div>
+                <div class="occupation-stamp" id="occupation-id">#—</div>
+              </div>
+              <div class="occupation-metrics">
+                <div><span>信用范围</span><strong id="occupation-credit">—</strong></div>
+                <div><span>职业点公式</span><strong id="occupation-formula">—</strong></div>
+                <div><span>当前职业点</span><strong id="occupation-points">—</strong></div>
+                <div><span>任意特长</span><strong id="occupation-free-count">0</strong></div>
+              </div>
+              <div class="occupation-copy"><strong>固定技能</strong><div class="chip-list" id="fixed-skill-chips"></div></div>
+              <details class="compact-details" id="occupation-details">
+                <summary>职业资料</summary>
+                <p id="occupation-summary"></p>
+                <div class="occupation-copy"><strong>人脉</strong><p id="occupation-contacts">—</p></div>
+                <div class="occupation-copy"><strong>职业说明</strong><p id="occupation-description">—</p></div>
+              </details>
+            </article>
+            <div id="occupation-choice-groups" class="choice-stack"></div>
+            <div class="paper-card choice-card" id="free-choice-card" hidden>
+              <div class="choice-heading"><div><span class="choice-marker">＋</span><div><h3>任意特长</h3><p id="free-choice-caption" hidden></p></div></div><span class="choice-counter" id="free-choice-counter">0 / 0</span></div>
+              <div class="choice-search"><input id="free-choice-search" type="search" placeholder="搜索技能"></div>
+              <div class="checkbox-chip-grid" id="free-choice-grid"></div>
+            </div>
+          </div>
+
+          <div class="paper-card form-grid custom-grid" id="experience-panel">
+            <label class="field span-2"><span>经历包（可选）</span><select id="experience-selection"><option value="">无</option></select></label>
+            <label class="field"><span>实际 SAN 减少</span><input id="experience-san" type="number" min="0" value="0"></label>
+            <label class="field"><span>经历点预算</span><input id="experience-budget" type="number" min="0" value="0" readonly></label>
+            <label class="field span-2" id="experience-name-wrap" hidden><span>自定义经历包名称</span><input id="experience-name"></label>
+            <label class="field span-2" id="experience-notes-wrap" hidden><span>自定义效果与背景要求</span><textarea id="experience-notes" rows="3"></textarea></label>
+            <details class="compact-details span-2" id="experience-details" hidden><summary>经历包说明</summary><p id="experience-description"></p></details>
+          </div>
+          <div id="custom-occupation-panel" hidden>
+            <div class="paper-card form-grid custom-grid">
+              <label class="field span-2"><span>职业名称</span><input id="custom-name" value="自定义职业"></label>
+              <label class="field"><span>信用下限</span><input id="custom-credit-min" type="number" min="0" max="99" value="10"></label>
+              <label class="field"><span>信用上限</span><input id="custom-credit-max" type="number" min="0" max="99" value="50"></label>
+              <label class="field span-2"><span>职业点公式</span><select id="custom-formula-kind"><option value="EDU*4">EDU × 4</option><option value="secondary">EDU × 2 + 指定属性 × 2</option></select></label>
+              <label class="field" id="custom-secondary-wrap" hidden><span>指定属性</span><select id="custom-secondary"><option>STR</option><option>CON</option><option>SIZ</option><option selected>DEX</option><option>APP</option><option>INT</option><option>POW</option></select></label>
+            </div>
+            <div class="paper-card choice-card">
+              <div class="choice-heading"><div><span class="choice-marker">自</span><div><h3>职业技能</h3><p>信用评级自动计入</p></div></div><span class="choice-counter" id="custom-skill-counter">0 / 8</span></div>
+              <div class="choice-search"><input id="custom-skill-search" type="search" placeholder="搜索技能或专攻"></div>
+              <div class="checkbox-chip-grid" id="custom-skill-grid"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="wizard-step" data-step="3" aria-labelledby="step-3-title">
+          <div class="section-heading">
+            <div><h1 id="step-3-title">技能分配</h1></div>
+            <span class="chapter-number">04</span>
+          </div>
+
+          <div class="budget-dashboard">
+            <article class="budget-card occupation-budget"><div><span>职业点预算</span><strong><b id="occ-used">0</b> / <b id="occ-total">200</b></strong></div><div class="meter"><i id="occ-meter"></i></div><small id="occ-remaining">剩余 200 点</small></article>
+            <article class="budget-card interest-budget"><div><span>兴趣点预算</span><strong><b id="int-used">0</b> / <b id="int-total">100</b></strong></div><div class="meter"><i id="int-meter"></i></div><small id="int-remaining">剩余 100 点</small></article>
+          </div>
+
+          <div class="skill-toolbar paper-card">
+            <label class="search-box"><span>⌕</span><input id="skill-search" type="search" placeholder="搜索技能或专攻"></label>
+            <select id="skill-filter" aria-label="技能筛选"><option value="all">全部技能</option><option value="occupation">仅本职技能</option><option value="allocated">已有投入</option><option value="specialized">专攻技能</option></select>
+            <div class="table-legend"><span><i class="legend-star">★</i> 本职</span><span><i class="legend-spec">专</i> 专攻</span></div>
+          </div>
+
+          <div class="skill-table-wrap paper-card">
+            <table class="skill-table">
+              <thead><tr><th>类型</th><th>技能</th><th>基础</th><th>职业点</th><th>兴趣点</th><th>经历包点</th><th>成长点数</th><th>普通</th><th>困难</th><th>极难</th></tr></thead>
+              <tbody id="skill-table-body"></tbody>
+            </table>
+            <div class="empty-state" id="skill-empty" hidden>没有符合当前筛选条件的技能。</div>
+          </div>
+          <p class="footnote" id="experience-remaining" hidden></p>
+        </section>
+
+        <section class="wizard-step" data-step="4" aria-labelledby="step-4-title">
+          <div class="section-heading">
+            <div><h1 id="step-4-title">背景与资产</h1></div>
+            <span class="chapter-number">05</span>
+          </div>
+
+          <div class="background-grid">
+            <label class="story-card"><span>形象描述</span><textarea id="bg-appearance" rows="4"></textarea></label>
+            <label class="story-card"><span>思想与信念</span><textarea id="bg-beliefs" rows="4"></textarea></label>
+            <label class="story-card"><span>重要之人</span><textarea id="bg-people" rows="4"></textarea></label>
+            <label class="story-card"><span>意义非凡之地</span><textarea id="bg-places" rows="4"></textarea></label>
+            <label class="story-card"><span>宝贵之物</span><textarea id="bg-possessions" rows="4"></textarea></label>
+            <label class="story-card"><span>特质</span><textarea id="bg-traits" rows="4"></textarea></label>
+            <label class="story-card"><span>伤口和疤痕</span><textarea id="bg-scars" rows="4"></textarea></label>
+            <label class="story-card"><span>恐惧症和躁狂症</span><textarea id="bg-phobias" rows="4"></textarea></label>
+          </div>
+          <div class="paper-card form-grid background-wide">
+            <fieldset class="field span-2"><legend>关键连接（可多选）</legend><div id="bg-key" class="checkbox-chip-grid"></div></fieldset>
+            <label class="field span-3"><span>个人简介 / 背景故事</span><textarea id="bg-story" rows="6"></textarea></label>
+            <label class="field span-3"><span>同伴、联系人与补充备注</span><textarea id="bg-contacts" rows="4"></textarea></label>
+          </div>
+
+          <div class="asset-reference paper-card">
+            <div><h2>资产参考</h2></div>
+            <div class="asset-reference-values"><span>信用 <b id="asset-credit">0</b></span><span id="asset-ref-living">身无分文</span><span>消费 <b id="asset-ref-spending">$0.50</b></span><span>现金 <b id="asset-ref-cash">$0.50</b></span><span>资产 <b id="asset-ref-assets">$0</b></span></div>
+            <button class="secondary-button" type="button" id="apply-asset-reference">自动计算</button>
+          </div>
+          <div class="paper-card form-grid assets-grid">
+            <label class="field"><span>生活水平</span><input id="asset-living"></label>
+            <label class="field"><span>消费水平（美元）</span><input id="asset-spending" placeholder="自动计算" inputmode="decimal"><small id="asset-converted-spending"></small></label>
+            <label class="field"><span>现金（美元）</span><input id="asset-cash" placeholder="自动计算" inputmode="decimal"><small id="asset-converted-cash"></small></label>
+            <label class="field"><span>其他资产总额（美元）</span><input id="asset-other-assets" placeholder="自动计算" inputmode="decimal"><small id="asset-converted-assets"></small></label>
+            <label class="field"><span>汇率年份</span><input id="asset-year" readonly></label>
+            <label class="field"><span>目标币种</span><select id="asset-currency"></select></label>
+            <div class="span-3 fx-source" aria-live="polite">
+              <p id="asset-fx-note"></p>
+              <p id="asset-fx-warning" class="fx-warning" hidden></p>
+              <p id="asset-source-summary" class="footnote"></p>
+              <details id="asset-source-details">
+                <summary>来源详情</summary>
+                <dl id="asset-source-content"></dl>
+                <p class="footnote">数据来自用户提供的历史汇率表，缺失值未插补，历史报价的统计口径可能不同。美元资产参考沿用现有信用评级规则，不代表逐年购买力。</p>
+              </details>
+              <details id="asset-missing-details" hidden>
+                <summary id="asset-missing-summary"></summary>
+                <ul id="asset-missing-list"></ul>
+              </details>
+            </div>
+            <label class="field span-3"><span>资产说明</span><textarea id="asset-description" rows="4"></textarea></label>
+            <label class="field"><span>交通工具</span><textarea id="asset-vehicles" rows="3"></textarea></label>
+            <label class="field"><span>住所</span><textarea id="asset-residence" rows="3"></textarea></label>
+            <label class="field"><span>奢侈品</span><textarea id="asset-luxuries" rows="3"></textarea></label>
+            <label class="field"><span>股票 / 证券</span><textarea id="asset-securities" rows="3"></textarea></label>
+            <label class="field"><span>其他</span><textarea id="asset-other" rows="3"></textarea></label>
+          </div>
+        </section>
+
+        <section class="wizard-step" data-step="5" aria-labelledby="step-5-title">
+          <div class="section-heading">
+            <div><h1 id="step-5-title">武器与物品</h1></div>
+            <span class="chapter-number">06</span>
+          </div>
+
+          <div class="equipment-section paper-card">
+            <div class="card-title"><div><h2>常用武器 <span class="item-limit">最多 6 项</span></h2></div><button type="button" class="secondary-button" id="add-weapon">＋ 添加武器</button></div>
+            <div class="equipment-table-wrap"><table class="equipment-table"><thead><tr><th>#</th><th>名称</th><th>类型</th><th>使用技能</th><th>伤害</th><th>射程</th><th>次数</th><th>弹药</th><th>故障</th><th></th></tr></thead><tbody id="weapon-table-body"></tbody></table></div>
+            <div class="empty-state" id="weapon-empty">尚未添加武器。</div>
+          </div>
+
+          <div class="equipment-section paper-card">
+            <div class="card-title"><div><h2>随身物品 <span class="item-limit">最多 15 项</span></h2></div><button type="button" class="secondary-button" id="add-item">＋ 添加物品</button></div>
+            <datalist id="inventory-locations"><option value="头部"></option><option value="颈部"></option><option value="上身"></option><option value="腰部"></option><option value="左手"></option><option value="右手"></option><option value="腿部"></option><option value="脚部"></option><option value="衣袋"></option><option value="裤袋"></option><option value="背包"></option></datalist>
+            <div class="equipment-table-wrap"><table class="equipment-table inventory-table"><thead><tr><th>#</th><th>物品名称</th><th>状态</th><th>携带部位</th><th>背包格 / 备注</th><th></th></tr></thead><tbody id="inventory-table-body"></tbody></table></div>
+            <div class="empty-state" id="inventory-empty">尚未添加随身物品。</div>
+          </div>
+        </section>
+
+        <section class="wizard-step" data-step="6" aria-labelledby="step-6-title">
+          <div class="section-heading">
+            <div><h1 id="step-6-title">检查与导出</h1></div>
+            <span class="chapter-number">07</span>
+          </div>
+
+          <div class="review-overview">
+            <div class="review-score paper-card"><div class="review-ring" id="review-ring"><strong id="review-score">—</strong><span>导出状态</span></div><div><h2 id="review-title">等待检查</h2><p id="review-summary"></p><button type="button" class="secondary-button" id="validate-now">重新检查</button></div></div>
+            <div class="issue-counts paper-card"><div class="issue-count error"><span>错误</span><strong id="error-count">0</strong></div><div class="issue-count warning"><span>警告</span><strong id="warning-count">0</strong></div><div class="issue-count info"><span>提醒</span><strong id="info-count">0</strong></div></div>
+          </div>
+          <div class="issue-list paper-card" id="issue-list"><div class="empty-state">尚未执行检查。</div></div>
+
+          <div class="export-grid">
+            <article class="export-card pdf-export-card">
+              <div class="export-icon">PDF</div><h2>PDF 调查员卡</h2><p>1920s 版式 · 两页 · 可预览</p>
+              <button type="button" class="primary-button" id="export-pdf">生成 PDF</button>
+              <a class="download-button" id="download-pdf" hidden>下载 PDF</a>
+            </article>
+            <article class="export-card excel-export-card">
+              <div class="export-icon">XLSX</div><h2>Excel 调查员卡</h2><p>14 个工作表 · 可编辑</p>
+              <button type="button" class="primary-button alt" id="export-excel">导出 Excel</button>
+            </article>
+          </div>
+
+          <div class="pdf-preview-section" id="pdf-preview-section" hidden>
+            <div class="card-title"><div><h2>PDF 两页预览</h2></div></div>
+            <div class="pdf-previews"><figure><img id="pdf-preview-1" alt="PDF 第一页预览"><figcaption>第 1 页</figcaption></figure><figure><img id="pdf-preview-2" alt="PDF 第二页预览"><figcaption>第 2 页</figcaption></figure></div>
+          </div>
+        </section>
+
+        <div class="step-footer">
+          <button type="button" class="secondary-button" id="previous-step">← 上一步</button>
+          <div><span id="step-caption">步骤 1 / 7</span><i><b id="footer-progress"></b></i></div>
+          <button type="button" class="primary-button compact" id="next-step">下一步 →</button>
+        </div>
+      </main>
+
+      <aside class="live-inspector">
+        <div class="mini-profile">
+          <div class="mini-portrait"><img id="mini-portrait-image" alt="头像" hidden><span id="mini-portrait-placeholder">?</span></div>
+          <div><strong id="mini-name">未命名调查员</strong><span id="mini-occupation">尚未选择职业</span><small id="mini-era">1920s · 30 岁</small></div>
+        </div>
+        <div class="mini-stats">
+          <div><span>HP</span><strong id="mini-hp">10</strong></div><div><span>MP</span><strong id="mini-mp">10</strong></div><div><span>SAN</span><strong id="mini-san">50</strong></div><div><span>MOV</span><strong id="mini-mov">8</strong></div>
+        </div>
+        <div class="inspector-section"><div class="inspector-section-title"><span>点数预算</span><small id="mini-budget-state">尚未分配</small></div><div class="mini-budget"><span>职业点 <b id="mini-occ-budget">0 / 200</b></span><i><b id="mini-occ-meter"></b></i></div><div class="mini-budget interest"><span>兴趣点 <b id="mini-int-budget">0 / 100</b></span><i><b id="mini-int-meter"></b></i></div></div>
+        <div class="inspector-section"><div class="inspector-section-title"><span>当前提示</span><small id="mini-issue-count">0 项</small></div><div class="mini-notice" id="mini-notice"><span>i</span><p>等待检查</p></div></div>
+      </aside>
+    </div>
+  </div>
+
+  <dialog id="import-dialog" aria-labelledby="import-title" aria-describedby="import-replace-note">
+    <form method="dialog" class="dialog-card import-dialog-card">
+      <h2 id="import-title">导入调查员</h2>
+      <p id="import-filename"></p>
+      <dl class="import-summary" id="import-summary"></dl>
+      <div class="import-warnings" id="import-warnings" hidden><strong>导入提示</strong><ul id="import-warning-list"></ul></div>
+      <p id="import-replace-note">将替换当前调查员，可撤销本次导入。</p>
+      <div><button value="cancel" class="secondary-button" autofocus>取消</button><button type="button" class="primary-button" id="import-confirm">确认导入</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="attribute-import-dialog" aria-labelledby="attribute-import-title" aria-describedby="attribute-import-note">
+    <form method="dialog" class="dialog-card import-dialog-card">
+      <h2 id="attribute-import-title">导入属性</h2>
+      <p id="attribute-import-filename"></p>
+      <dl class="import-summary attribute-import-summary" id="attribute-import-summary"></dl>
+      <div class="import-warnings" id="attribute-import-warnings" hidden><strong>导入提示</strong><ul id="attribute-import-warning-list"></ul></div>
+      <p id="attribute-import-note">仅更新已填写的属性，空白项保留原值。</p>
+      <div><button value="cancel" class="secondary-button" autofocus>取消</button><button type="button" class="primary-button" id="attribute-import-confirm">确认导入</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="reset-dialog">
+    <form method="dialog" class="dialog-card">
+      <div class="dialog-icon">!</div><h2>清空当前调查员？</h2><p>当前草稿和头像将清除，已下载的文件不受影响。</p>
+      <div><button value="cancel" class="secondary-button">取消</button><button value="confirm" class="primary-button danger" id="reset-confirm">确认清空</button></div>
+    </form>
+  </dialog>
+
+  <div class="busy-overlay" id="busy-overlay" hidden><div class="busy-card"><span class="spinner"></span><strong id="busy-title">正在处理……</strong><p id="busy-detail">请保持此页面打开。</p></div></div>
+  <div class="toast-region" id="toast-region" aria-live="polite"></div>
+</body>
+</html>

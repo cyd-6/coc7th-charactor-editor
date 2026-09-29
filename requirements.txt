@@ -1,0 +1,11 @@
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+python-multipart>=0.0.9,<1
+openpyxl>=3.1,<4
+pywin32>=306; sys_platform == "win32"
+reportlab>=4.2,<5
+pypdf>=5,<7
+pdfplumber>=0.11,<1
+pillow>=11,<13
+pymupdf>=1.24,<2
+lxml>=5,<7

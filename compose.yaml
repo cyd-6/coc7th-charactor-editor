@@ -1,0 +1,18 @@
+name: coc7-card
+
+services:
+  coc7:
+    build: .
+    image: coc7-card:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${COC7_BIND_IP:-127.0.0.1}:${COC7_PORT:-8765}:8765"
+    environment:
+      TZ: ${TZ:-Asia/Hong_Kong}
+      COC7_EXCEL_TIMEOUT: ${COC7_EXCEL_TIMEOUT:-120}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s

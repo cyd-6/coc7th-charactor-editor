@@ -1,0 +1,24 @@
+COC7 Investigator Builder - Docker edition
+
+This edition installs its Linux components when the image is built.
+Verified Python package versions are listed in requirements.lock.txt.
+Python package metadata and license files are installed under the image's
+/usr/local/lib/python3.12/site-packages/*.dist-info directories.
+Debian package copyright and license files are under /usr/share/doc/.
+
+Python: https://www.python.org/ - Python Software Foundation License.
+LibreOffice: https://www.libreoffice.org/ - see installed Debian copyright
+files and https://www.libreoffice.org/about-us/licenses/.
+Noto Sans SC: assets/fonts/OFL.txt - SIL Open Font License 1.1.
+lxml: https://lxml.de/ - BSD license; bundled libxml2/libxslt have their own
+license notices included in the installed distribution.
+PyMuPDF/MuPDF includes AGPL-3.0 licensed components; see installed license files.
+PyMuPDF source: https://github.com/pymupdf/PyMuPDF
+MuPDF source: https://mupdf.com/releases/
+
+The user-supplied character-sheet template is not relicensed by this project.
+The PDF artwork in assets/templates/1920sCha.pdf was supplied by the user as
+the requested export layout. Its original artwork and copyright remain with
+their respective owners; this project does not relicense that template.
+This edition does not bundle Microsoft Excel or the Windows Python runtime.
+Original Windows dependency versions are retained in docs/ for reference.
