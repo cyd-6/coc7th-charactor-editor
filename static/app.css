@@ -42,8 +42,6 @@
   --shadow-md: 0 18px 48px rgba(22, 31, 29, 0.13);
   --radius: 15px;
   --app-height: 100dvh;
-  --visual-width: 100vw;
-  --adaptive-density: 1;
   /*
    * Keep the desktop canvas fluid without letting very wide monitors flatten
    * the forms. app.js writes the same curve from the visual viewport so zoom
@@ -490,7 +488,6 @@ a { color: inherit; }
 .inventory-table { min-width: 650px; }
 .equipment-choice { display: grid; gap: 6px; min-width: 185px; }
 .equipment-choice select { width: 100%; max-width: 270px; text-overflow: ellipsis; font-size: 0.75rem; }
-.equipment-choice-note { color: var(--muted); font-size: 0.75rem; }
 .remove-row { width: 27px; height: 27px; padding: 0; color: var(--rust); background: transparent; border: 1px solid #d6b4a7; border-radius: 6px; }
 .remove-row:hover { color: var(--on-accent); background: var(--rust); }
 .empty-state { padding: 22px; text-align: center; color: var(--muted); font-size: 0.75rem; }

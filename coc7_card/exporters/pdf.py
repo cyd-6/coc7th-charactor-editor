@@ -165,7 +165,7 @@ class PdfExporter:
             raise
         except Exception as exc:
             raise PdfExportError("无法读取 1920s PDF 底版。") from exc
-        formula = draft.occupation.point_formula if draft.occupation else "EDU*4"
+        formula = draft.occupation.point_formula
         derived = RuleEngine.calculate(draft.attributes, draft.identity.age, formula, draft.experience.san_loss)
         timestamp = generated_at or datetime.now()
         overlay = io.BytesIO()
@@ -196,7 +196,7 @@ class PdfExporter:
         identity = draft.identity
         for value, x, baseline, width in (
             (identity.name, 114, 103, 93), (identity.player, 114, 118.7, 93),
-            (draft.occupation.name if draft.occupation else identity.occupation_name, 114, 134.3, 93),
+            (draft.occupation.name, 114, 134.3, 93),
             (identity.age, 114, 150, 38), (identity.gender, 176, 150, 31),
             (identity.residence, 114, 165.6, 93), (identity.birthplace, 114, 181.3, 93),
         ):

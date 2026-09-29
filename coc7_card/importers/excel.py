@@ -102,7 +102,6 @@ class _Workbook:
                 self.paths[sheet.get("name")] = relation
         if require_card and "人物卡" not in self.paths:
             raise ExcelImportError("未找到受支持的“人物卡”工作表。请导入 CY26.2 模板或本工具导出的 XLSX。")
-        self.defined_names = {node.get("name"): node.text or "" for node in workbook.findall("s:definedNames/s:definedName", NS)}
 
     def warn(self, message: str) -> None:
         if message not in self.warnings:
@@ -235,9 +234,10 @@ def _skills(book: _Workbook, catalog: TemplateCatalog, attributes: dict) -> list
         book.warn("旧版表格未区分经历包点与成长点数：合并的增长值已保留在“成长点数”，经历包点暂填 0，请按原记录拆分。")
     result = []
     overridden = []
+    attribute_values = Attributes.from_mapping(attributes)
     for definition in catalog.skills:
         mapping = catalog.skill_cell(definition.template_slot)
-        expected = RuleEngine.skill_base_value(definition.base_formula, Attributes.from_mapping(attributes), definition.base_value)
+        expected = RuleEngine.skill_base_value(definition.base_formula, attribute_values, definition.base_value)
         base = book.integer(mapping.base_cell, expected)
         formula = re.sub(r"[\s$]", "", book.formula(mapping.base_cell) or "").upper()
         # Known standard attribute references are recalculated by the existing
@@ -286,10 +286,7 @@ def _occupation(book: _Workbook, catalog: TemplateCatalog, draft: dict) -> None:
     name = draft["identity"]["occupation_name"]
     identifier = book.integer("M5")
     by_name = catalog.occupation_by_name(name) if name else None
-    by_id = catalog.occupation_by_id(identifier)
-    occupation = by_name
-    if occupation is None and by_id is not None and (not name or name == by_id.name):
-        occupation = by_id
+    occupation = by_name if name else catalog.occupation_by_id(identifier)
     draft.update(occupation_mode="catalog", occupation_id=occupation.occupation_id if occupation else catalog.occupations[0].occupation_id,
                  custom_occupation={"name": name or book.text("C3", "职业列表") or "自定义职业", "credit_min": 0, "credit_max": 99, "point_formula_kind": "EDU*4", "secondary": "DEX"},
                  custom_skill_slots=[], group_choices={}, free_skill_choices=[])

@@ -161,7 +161,7 @@ def _parse_table(table: dict[tuple[int, int], _Cell], sheet: str) -> dict | None
     if horizontal and vertical:
         (row, column), _ = labels[0]
         right = table.get((row, column + 1), _Cell())
-        below = [cell for (r, c), cell in table.items() if r > row and c == column and cell.present]
+        below = [cell for (r, c), cell in table.items() if r > row and c == column]
         numeric_below = any(_looks_numeric(cell) for cell in below)
         if _looks_numeric(right) and numeric_below:
             raise ExcelImportError(f"“{sheet}”的属性排列不明确，请使用一行标题加一行数值，或“属性、数值”两列。")
@@ -172,7 +172,7 @@ def _parse_table(table: dict[tuple[int, int], _Cell], sheet: str) -> dict | None
     if horizontal:
         header = next(iter(rows))
         header_columns = {column for row, column in table if row == header}
-        value_rows = sorted({row for (row, col), cell in table.items() if row > header and col in header_columns and cell.present})
+        value_rows = sorted({row for row, col in table if row > header and col in header_columns})
         if len(value_rows) > 1:
             raise ExcelImportError(f"“{sheet}”含多行人物属性，请每次只导入一名调查员。")
         value_row = value_rows[0] if value_rows else header + 1
@@ -185,7 +185,7 @@ def _parse_table(table: dict[tuple[int, int], _Cell], sheet: str) -> dict | None
     else:
         label_column = next(iter(columns))
         for (row, column), key in labels:
-            if any(r == row and c > label_column + 1 and cell.present for (r, c), cell in table.items()):
+            if any(r == row and c > label_column + 1 for r, c in table):
                 raise ExcelImportError(f"“{sheet}”的属性旁含多列数值，请只保留一名调查员的“属性、数值”两列。")
             point = row, column + 1
             used.add(point)
@@ -194,7 +194,7 @@ def _parse_table(table: dict[tuple[int, int], _Cell], sheet: str) -> dict | None
                 values[key] = value
     if not values:
         raise ExcelImportError(f"“{sheet}”未填写可导入的属性值；空白属性会保留网页当前值。")
-    ignored = [cell for point, cell in table.items() if point not in used and cell.present]
+    ignored = [cell for point, cell in table.items() if point not in used]
     generic_headers = {"属性", "数值", "属性值", "值", "attribute", "value", "attributes", "values"}
     if any(str(cell.value).strip().casefold() not in generic_headers for cell in ignored):
         warnings.append("已忽略姓名、年龄、HP 等非属性字段。")

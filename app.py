@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from dataclasses import asdict
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
@@ -18,7 +19,6 @@ from coc7_card.web import (
     DraftPayloadError,
     build_draft,
     catalog_payload,
-    derived_payload,
     report_payload,
 )
 
@@ -101,7 +101,7 @@ def calculate(payload: dict) -> JSONResponse:
         age = int(payload.get("age", 30))
         formula = str(payload.get("occupation_formula") or "EDU*4")
         derived = RuleEngine.calculate(attributes, age, formula, int(payload.get("san_loss", 0)))
-        return JSONResponse({"derived": derived_payload(derived)})
+        return JSONResponse({"derived": asdict(derived)})
     except (FormulaError, TypeError, ValueError) as exc:
         return JSONResponse(status_code=422, content={"detail": str(exc)})
 
@@ -118,7 +118,7 @@ def validate(payload: dict):
         return JSONResponse(status_code=503, content={"detail": str(exc)})
     return {
         "validation": report_payload(RuleEngine.validate(draft)),
-        "derived": derived_payload(derived),
+        "derived": asdict(derived),
         "asset_reference": RuleEngine.asset_reference(draft.assets.credit_rating),
     }
 

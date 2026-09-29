@@ -65,10 +65,6 @@ def report_payload(report) -> dict[str, Any]:  # noqa: ANN001
     }
 
 
-def derived_payload(derived) -> dict[str, Any]:  # noqa: ANN001
-    return asdict(derived)
-
-
 def build_draft(payload: dict[str, Any], catalog: TemplateCatalog) -> CharacterDraft:
     if not isinstance(payload, dict):
         raise DraftPayloadError("提交的数据不是有效的调查员草稿。")
@@ -366,5 +362,5 @@ def _integer(value: Any, default: int = 0) -> int:
         return int(default)
     try:
         return int(float(value))
-    except (TypeError, ValueError, OverflowError):
-        return int(default)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise DraftPayloadError("数值格式无效，请检查年龄和点数等数字字段。") from exc

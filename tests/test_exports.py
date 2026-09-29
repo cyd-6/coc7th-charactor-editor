@@ -10,6 +10,7 @@ import sys
 import warnings
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -19,10 +20,12 @@ from openpyxl import load_workbook
 from PIL import Image
 from pypdf import PdfReader
 
-from app import app, get_catalog
-from coc7_card.exporters.excel import ExcelExportError
+from app import FONT_PATH, app, get_catalog
+from coc7_card.exporters.excel import ExcelExporter, ExcelExportError
 from coc7_card.exporters.excel_linux import LinuxExcelExporter
+from coc7_card.exporters.pdf import PdfExporter, PdfExportError
 from coc7_card.exporters.xlsx_template import TemplateWorkbook, tag
+from coc7_card.web import build_draft
 from scripts.recalculate_template import recalculate
 
 
@@ -175,6 +178,49 @@ def test_invalid_draft_never_exports(client, payload):
         response = export(client, kind, payload)
         assert response.status_code == 422
         assert "姓名不能为空" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("kind", ["windows", "linux", "pdf"])
+def test_public_export_rejects_missing_occupation(payload, kind):
+    catalog = get_catalog()
+    draft = build_draft(payload, catalog)
+    draft.occupation = None
+    if kind == "pdf":
+        exporter = PdfExporter(FONT_PATH)
+        error = PdfExportError
+    else:
+        exporter = (ExcelExporter if kind == "windows" else LinuxExcelExporter)(catalog)
+        error = ExcelExportError
+    with pytest.raises(error, match="必须选择或创建一个职业"):
+        exporter.export(draft)
+
+
+@requires_calc
+@pytest.mark.parametrize("sheet_name,address,value,message", [
+    ("简化卡 骰娘导入", "T29", '=IF(W29=0,"",人物卡!AB41)', "模板兼容性修复未写入"),
+    ("更新说明", "P3", "旧模板版本说明", "仍含模板版本说明"),
+    ("附表", "AB61", "=1/0", "公式错误"),
+])
+def test_excel_rejects_unprepared_template(payload, tmp_path, sheet_name, address, value, message):
+    catalog = get_catalog()
+    template = tmp_path / "unprepared.xlsx"
+    book = TemplateWorkbook(catalog.template_path)
+    try:
+        target = book.Worksheets(sheet_name).Range(address)
+        if value.startswith("="):
+            target.Formula = value
+        else:
+            target.Value2 = value
+        book.save(template)
+    finally:
+        book.close()
+    # Keep valid schema metadata and a matching source hash: rejection must
+    # come from the output checks, without repairing this altered template.
+    template_hash = hashlib.sha256(template.read_bytes()).hexdigest()
+    altered_catalog = replace(catalog, template_path=template, source_sha256=template_hash)
+    with pytest.raises(ExcelExportError, match=message):
+        LinuxExcelExporter(altered_catalog).export(build_draft(payload, altered_catalog))
+    assert hashlib.sha256(template.read_bytes()).hexdigest() == template_hash
 
 
 @requires_calc

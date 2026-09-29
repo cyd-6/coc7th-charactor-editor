@@ -18,12 +18,11 @@ from lxml import etree as ET
 
 from ..models import CharacterDraft, ExcelExportResult
 from ..rules import RuleEngine
-from .excel import ExcelExporter, ExcelExportError, ExcelUnavailableError, _safe_filename
+from .excel import FORMULA_ERRORS, ExcelExporter, ExcelExportError, ExcelUnavailableError, _safe_filename
 from .xlsx_template import TemplateWorkbook, tag, worksheet_paths
 
 
 EXCEL_SLOT = threading.BoundedSemaphore(1)
-FORMULA_ERRORS = {"#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NUM!", "#NULL!"}
 
 
 class LinuxExcelExporter(ExcelExporter):
@@ -67,7 +66,6 @@ class LinuxExcelExporter(ExcelExporter):
                 output_directory.mkdir()
                 workbook = TemplateWorkbook(self.catalog.template_path)
                 try:
-                    self._patch_template(workbook)
                     self._write_character(workbook, draft, portrait_bytes, temp)
                     # LibreOffice may trust Excel's existing caches on import,
                     # even with fullCalcOnLoad. Remove them to force calculation

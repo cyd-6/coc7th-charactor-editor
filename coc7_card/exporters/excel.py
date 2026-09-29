@@ -17,6 +17,9 @@ from ..models import CharacterDraft, ExcelExportResult
 from ..rules import RuleEngine
 
 
+FORMULA_ERRORS = {"#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NUM!", "#NULL!"}
+
+
 class ExcelUnavailableError(RuntimeError):
     pass
 
@@ -81,7 +84,6 @@ class ExcelExporter:
                 IgnoreReadOnlyRecommended=True,
                 AddToMru=False,
             )
-            self._patch_template(workbook)
             self._write_character(workbook, draft, portrait_bytes, temp_path)
             excel.CalculateFullRebuild()
             workbook.Save()
@@ -120,47 +122,6 @@ class ExcelExporter:
             warnings=tuple(issue.message for issue in report.warnings),
         )
 
-    @staticmethod
-    def _patch_template(workbook) -> None:
-        ExcelExporter._remove_template_version_branding(workbook)
-
-        simple = workbook.Worksheets("简化卡 骰娘导入")
-        simple.Range("T29").Formula = '=IF(W29=0,"",\'人物卡\'!AB42)'
-        simple.Range("T34").Formula = '=IF(W34=0,"",\'人物卡\'!AB47)'
-        appendix = workbook.Worksheets("附表")
-        for cell in ("AT15", "AT16", "AT17"):
-            target = appendix.Range(cell)
-            formula = str(target.Formula or "")
-            formula = re.sub(
-                r"(?:'技能注释'|技能注释)!#REF!",
-                "'附表'!$V$226",
-                formula,
-                flags=re.IGNORECASE,
-            )
-            target.Formula = formula
-        appendix.Range("AB61").MergeArea.ClearContents()
-
-        # The template's occupation-marker formula assumes every visible skill
-        # exists in the occupation matrix. Skills such as 计算机使用 and 电子学
-        # are valid card rows but may be absent from that matrix, causing MATCH
-        # to return #N/A. Treat an unmatched row as a non-occupation skill (0)
-        # while preserving the original formula for every successful lookup.
-        card = workbook.Worksheets("人物卡")
-        for column in ("D", "Z"):
-            for row in range(16, 50):
-                target = card.Range(f"{column}{row}")
-                formula = str(target.Formula or "")
-                if not formula.startswith("=") or formula.upper().startswith("=IFERROR("):
-                    continue
-                target.Formula = f"=IFERROR({formula[1:]},0)"
-
-    @staticmethod
-    def _remove_template_version_branding(workbook) -> None:
-        """Remove the source template's version note from the export copy."""
-        # Excel rejects clearing only part of a merged range, even its anchor.
-        # MergeArea is also safe for ordinary, unmerged cells.
-        workbook.Worksheets("更新说明").Range("P3").MergeArea.ClearContents()
-
     def _write_character(
         self,
         workbook,
@@ -171,13 +132,13 @@ class ExcelExporter:
         sheet = workbook.Worksheets("人物卡")
         identity = draft.identity
         occupation = draft.occupation
-        formula = occupation.point_formula if occupation else "EDU*4"
+        formula = occupation.point_formula
         derived = RuleEngine.calculate(draft.attributes, identity.age, formula, draft.experience.san_loss)
 
         values = {
             "E3": identity.name,
             "E4": identity.player,
-            "E5": occupation.name if occupation else identity.occupation_name,
+            "E5": occupation.name,
             "M4": identity.era,
             "E6": int(identity.age),
             "M6": identity.gender,
@@ -200,12 +161,11 @@ class ExcelExporter:
             sheet.Range(cell).Value2 = value
 
         self._write_date(sheet, identity.current_date)
-        if occupation:
-            if occupation.is_custom:
-                sheet.Range("M5").Value2 = 1
-                self._write_custom_occupation(workbook, draft)
-            else:
-                sheet.Range("M5").Value2 = occupation.occupation_id
+        if occupation.is_custom:
+            sheet.Range("M5").Value2 = 1
+            self._write_custom_occupation(workbook, draft)
+        else:
+            sheet.Range("M5").Value2 = occupation.occupation_id
 
         definitions = {definition.template_slot: definition for definition in self.catalog.skills}
         for skill in draft.skills:
@@ -261,8 +221,6 @@ class ExcelExporter:
     @staticmethod
     def _write_custom_occupation(workbook, draft: CharacterDraft) -> None:
         occupation = draft.occupation
-        if occupation is None:
-            return
         sheet = workbook.Worksheets("职业列表")
         sheet.Range("C3").Value2 = occupation.name
         sheet.Range("D3").Value2 = occupation.credit_range_text
@@ -341,38 +299,13 @@ class ExcelExporter:
                 fx.Range(f"K{row}").Formula = f'={formula}*IF($K$1=2026,20,1)'
             else:
                 fx.Range(f"K{row}").Value2 = float(value)
-        # Use the template's existing custom-currency hook so all its lookup
-        # formulas remain valid, including currencies absent from its old list.
-        sheet.Range("BK37").Formula = '=IF(\'货币汇率\'!$K$8="可用",\'货币汇率\'!$K$3,"请选择可用币种")'
+        # Fixed conversion formulas and labels belong to the prepared template.
         sheet.Range("BO37").NumberFormat = "General"
-        sheet.Range("BO37").Formula = "='货币汇率'!$K$5"
-        sheet.Range("S62").Formula = "=BK37"
-        appendix = sheet.Parent.Worksheets("附表")
-        appendix.Range("AF263").Formula = '=IF(ISNUMBER(\'货币汇率\'!$K$5),AA263,"")'
-        appendix.Range("AG263").Formula = '=IF(ISNUMBER(\'货币汇率\'!$K$5),AB263,"")'
-        for cell, row in (("I62", 9), ("O62", 10), ("L62", 11)):
-            sheet.Range(cell).Formula = f'=IF(ISNUMBER(\'货币汇率\'!$K$5),ROUND(\'货币汇率\'!$K${row}*\'货币汇率\'!$K$5,2),"")'
+        for cell in ("I62", "O62", "L62", "B75", "F75", "J75", "N75", "R75"):
             sheet.Range(cell).NumberFormat = "#,##0.00"
             sheet.Range(cell).MergeArea.ShrinkToFit = True
-        # Downstream totals must use the same amounts, including USD overrides.
-        # These references cannot cycle: main-card amounts depend only on K9:K11
-        # and the FX rate, not on the appendix's display/abbreviation chain.
-        for cell, main in (("AE230", "I62"), ("AF230", "O62"), ("AG230", "L62")):
-            appendix.Range(cell).Formula = f"='人物卡'!{main}"
         sheet.Range("S62").MergeArea.ShrinkToFit = True
         sheet.Range("O61").Value2 = "当前现金"
-        # Keep the detailed-asset sum in the same currency as the total above.
-        # Its USD inputs are editable beside the other conversion assumptions.
-        for row, cell, title in ((13,"B75","交通工具"), (14,"F75","住所"), (15,"J75","奢侈品"),
-                                 (16,"N75","股票 / 证券"), (17,"R75","其他")):
-            fx.Range(f"J{row}").Value2 = f"{title}（美元）"
-            # Updated blank templates already hold converted formulas. Retain
-            # their USD input instead of converting the cached result twice.
-            if "货币汇率!" not in str(sheet.Range(cell).Formula or "").replace("'", ""):
-                fx.Range(f"K{row}").Value2 = sheet.Range(cell).Value2
-            sheet.Range(cell).NumberFormat = "#,##0.00"
-            sheet.Range(cell).Formula = f'=IF(ISNUMBER(\'货币汇率\'!$K$5),ROUND(\'货币汇率\'!$K${row}*\'货币汇率\'!$K$5,2),"")'
-            sheet.Range(cell).MergeArea.ShrinkToFit = True
         mapping = {
             "F62": assets.living_standard,
             "L63": assets.asset_description,
@@ -470,23 +403,15 @@ class ExcelExporter:
                 for row in sheet.iter_rows():
                     for cell in row:
                         value = cell.value
-                        if isinstance(value, str) and value.startswith("=") and "#REF!" in value:
+                        if not isinstance(value, str) or not value.startswith("="):
+                            continue
+                        if "#REF!" in value:
                             raise ExcelExportError(f"导出结果仍含断裂引用：{sheet.title}!{cell.coordinate}")
-                        if isinstance(value, str) and value.startswith("="):
-                            calculated = value_book[sheet.title][cell.coordinate].value
-                            if calculated in {
-                                "#REF!",
-                                "#DIV/0!",
-                                "#VALUE!",
-                                "#NAME?",
-                                "#N/A",
-                                "#NUM!",
-                                "#NULL!",
-                            }:
-                                raise ExcelExportError(
-                                    f"导出结果含公式错误 {calculated}：{sheet.title}!{cell.coordinate}"
-                                )
-            _ = value_book["人物卡"]["E3"].value
+                        calculated = value_book[sheet.title][cell.coordinate].value
+                        if calculated in FORMULA_ERRORS:
+                            raise ExcelExportError(
+                                f"导出结果含公式错误 {calculated}：{sheet.title}!{cell.coordinate}"
+                            )
             return len(formula_book.sheetnames)
         finally:
             formula_book.close()

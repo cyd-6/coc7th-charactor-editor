@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any
 
 
 ATTRIBUTE_KEYS = ("STR", "CON", "SIZ", "DEX", "APP", "INT", "POW", "EDU", "Luck")
@@ -222,16 +222,6 @@ class CharacterDraft:
     nonstandard_override: bool = False
     experience: ExperiencePackage = field(default_factory=ExperiencePackage)
 
-    def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    def find_skill(self, name_or_slot: str) -> SkillAllocation | None:
-        target = name_or_slot.strip().casefold()
-        for skill in self.skills:
-            if skill.name.strip().casefold() == target or skill.template_slot.strip().casefold() == target:
-                return skill
-        return None
-
 
 class IssueSeverity(StrEnum):
     ERROR = "error"
@@ -292,6 +282,3 @@ class PdfExportResult:
     data: bytes
     page_count: int
     preview_images: tuple[bytes, ...] = ()
-
-
-FormulaName = Literal["STR", "CON", "SIZ", "DEX", "APP", "INT", "POW", "EDU", "Luck"]

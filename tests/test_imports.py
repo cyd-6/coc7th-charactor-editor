@@ -74,7 +74,6 @@ def _write_character(catalog, payload, directory):
     output = directory / "fixture.xlsx"
     try:
         writer = ExcelExporter(catalog)
-        writer._patch_template(book)
         writer._write_character(book, build_draft(payload, catalog), None, directory)
         book.save(output)
     finally:
@@ -171,6 +170,55 @@ def test_template_roundtrip_preserves_inputs_and_source(catalog, investigator_pa
     assert result["portrait"] is None
     assert hashlib.sha256(catalog.template_path.read_bytes()).hexdigest() == original_hash
     assert hashlib.sha256(workbook_bytes).hexdigest() == uploaded_hash
+
+
+def test_blank_occupation_name_uses_saved_identifier(catalog, workbook_bytes):
+    occupation = next(item for item in catalog.occupations if item.occupation_id != 1)
+
+    def edit(parts):
+        _replace_cell(parts, "人物卡", "E5", value=None)
+        _replace_cell(parts, "人物卡", "M5", value=occupation.occupation_id)
+
+    result = import_investigator(_replace_parts(workbook_bytes, edit=edit), catalog)
+    state = result["draft"]
+    assert state["occupation_mode"] == "catalog"
+    assert state["occupation_id"] == occupation.occupation_id
+    assert state["identity"]["occupation_name"] == occupation.name
+    assert result["summary"]["occupation"] == occupation.name
+    assert not any("职业名称与序号不一致" in warning for warning in result["warnings"])
+
+
+def test_recognized_occupation_name_takes_precedence_over_conflicting_identifier(catalog, workbook_bytes):
+    occupation, other = [item for item in catalog.occupations if item.occupation_id != 1][:2]
+
+    def edit(parts):
+        _replace_cell(parts, "人物卡", "E5", value=occupation.name)
+        _replace_cell(parts, "人物卡", "M5", value=other.occupation_id)
+
+    result = import_investigator(_replace_parts(workbook_bytes, edit=edit), catalog)
+    state = result["draft"]
+    assert state["occupation_mode"] == "catalog"
+    assert state["occupation_id"] == occupation.occupation_id
+    assert state["identity"]["occupation_name"] == occupation.name
+    assert result["summary"]["occupation"] == occupation.name
+    assert any("职业名称与序号不一致" in warning for warning in result["warnings"])
+
+
+def test_unknown_occupation_name_stays_custom_despite_valid_identifier(catalog, workbook_bytes):
+    name = "不存在的自定义调查职业"
+    occupation = next(item for item in catalog.occupations if item.occupation_id != 1)
+
+    def edit(parts):
+        _replace_cell(parts, "人物卡", "E5", value=name)
+        _replace_cell(parts, "人物卡", "M5", value=occupation.occupation_id)
+
+    result = import_investigator(_replace_parts(workbook_bytes, edit=edit), catalog)
+    state = result["draft"]
+    assert state["occupation_mode"] == "custom"
+    assert state["custom_occupation"]["name"] == name
+    assert state["identity"]["occupation_name"] == name
+    assert result["summary"]["occupation"] == name
+    assert any("职业名称未能对应网页职业库" in warning for warning in result["warnings"])
 
 
 def test_custom_occupation_and_literal_text_roundtrip(catalog, investigator_payload, tmp_path):

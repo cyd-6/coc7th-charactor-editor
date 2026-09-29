@@ -202,7 +202,6 @@ function applyResponsiveLayout() {
   else if (width >= 2560) layout = "ultra";
   else if (width >= 1800) layout = "wide";
   const orientation = width >= height ? "landscape" : "portrait";
-  const density = Math.max(0.9, Math.min(1.18, width / 1600));
   const workspaceWidth = calculateWorkspaceWidth(width);
   const signature = `${layout}:${orientation}:${width}:${height}:${window.devicePixelRatio || 1}`;
   if (signature === lastResponsiveSignature) return;
@@ -211,8 +210,6 @@ function applyResponsiveLayout() {
   root.dataset.layout = layout;
   root.dataset.orientation = orientation;
   root.style.setProperty("--app-height", `${height}px`);
-  root.style.setProperty("--visual-width", `${width}px`);
-  root.style.setProperty("--adaptive-density", density.toFixed(3));
   root.style.setProperty("--workspace-max", `${workspaceWidth}px`);
 }
 
@@ -396,7 +393,7 @@ function bindStaticControls() {
   document.getElementById("add-weapon").addEventListener("click", addWeapon);
   document.getElementById("add-item").addEventListener("click", addInventoryItem);
   document.getElementById("weapon-table-body").addEventListener("input", handleWeaponInput);
-  document.getElementById("weapon-table-body").addEventListener("change", handleEquipmentSelection);
+  document.getElementById("weapon-table-body").addEventListener("change", handleWeaponSelection);
   document.getElementById("weapon-table-body").addEventListener("click", handleEquipmentRemove);
   document.getElementById("inventory-table-body").addEventListener("input", handleInventoryInput);
   document.getElementById("experience-selection").addEventListener("change", (event) => {
@@ -680,7 +677,6 @@ function syncOccupationSkills() {
     const specialization = selected.get(skill.template_slot);
     if (skill.selected_occupation && specialization && !String(skill.specialization || "").trim()) skill.specialization = specialization;
   });
-  renderBudgets();
   renderLiveSummary();
 }
 
@@ -821,7 +817,7 @@ async function refreshDerived(immediate = false) {
       if (generation !== draftGeneration) return;
       if (!response.ok) throw new Error(data.detail || "派生值计算失败。");
       state.derived = data.derived;
-      renderDerived(); renderBudgets(); setText("occupation-points", state.derived.occupation_points); renderLiveSummary(); scheduleSave();
+      renderDerived(); setText("occupation-points", state.derived.occupation_points); renderLiveSummary(); scheduleSave();
     } catch (error) { if (generation === draftGeneration) toast(friendlyErrorMessage(error, "派生值计算失败，请稍后重试。"), true); }
   };
   if (immediate) await run(); else derivedTimer = setTimeout(run, 220);
@@ -963,7 +959,7 @@ function addInventoryItem() {
 }
 
 function renderEquipment() {
-  document.getElementById("weapon-table-body").innerHTML = state.weapons.map((weapon, index) => `<tr data-equipment-kind="weapon" data-equipment-index="${index}"><td>${index + 1}</td><td><input data-field="name" value="${escapeAttr(weapon.name)}" placeholder="武器名称" aria-label="第 ${index + 1} 项武器名称"></td><td>${equipmentChoiceHtml("weapon", weapon, index)}</td><td><select data-field="skill" aria-label="第 ${index + 1} 项武器技能">${weaponSkillOptions(weapon.skill)}</select></td><td><input data-field="damage" value="${escapeAttr(weapon.damage)}" placeholder="1D8" aria-label="第 ${index + 1} 项武器伤害"></td><td><input data-field="range" value="${escapeAttr(weapon.range)}"></td><td><input data-field="attacks" value="${escapeAttr(weapon.attacks)}"></td><td><input data-field="ammo" value="${escapeAttr(weapon.ammo)}"></td><td><input data-field="malfunction" value="${escapeAttr(weapon.malfunction)}"></td><td><button type="button" class="remove-row" data-remove-row="weapon" aria-label="移除武器">×</button></td></tr>`).join("");
+  document.getElementById("weapon-table-body").innerHTML = state.weapons.map((weapon, index) => `<tr data-equipment-kind="weapon" data-equipment-index="${index}"><td>${index + 1}</td><td><input data-field="name" value="${escapeAttr(weapon.name)}" placeholder="武器名称" aria-label="第 ${index + 1} 项武器名称"></td><td>${weaponChoiceHtml(weapon, index)}</td><td><select data-field="skill" aria-label="第 ${index + 1} 项武器技能">${weaponSkillOptions(weapon.skill)}</select></td><td><input data-field="damage" value="${escapeAttr(weapon.damage)}" placeholder="1D8" aria-label="第 ${index + 1} 项武器伤害"></td><td><input data-field="range" value="${escapeAttr(weapon.range)}"></td><td><input data-field="attacks" value="${escapeAttr(weapon.attacks)}"></td><td><input data-field="ammo" value="${escapeAttr(weapon.ammo)}"></td><td><input data-field="malfunction" value="${escapeAttr(weapon.malfunction)}"></td><td><button type="button" class="remove-row" data-remove-row="weapon" aria-label="移除武器">×</button></td></tr>`).join("");
   document.getElementById("inventory-table-body").innerHTML = state.inventory.map((item, index) => `<tr data-equipment-kind="inventory" data-equipment-index="${index}"><td>${index + 1}</td><td><input data-field="name" value="${escapeAttr(item.name)}" placeholder="物品名称" aria-label="第 ${index + 1} 项物品名称"></td><td><input data-field="status" value="${escapeAttr(item.status)}" aria-label="第 ${index + 1} 项物品状态"></td><td><input data-field="location" list="inventory-locations" value="${escapeAttr(item.location)}" placeholder="选择或填写部位" aria-label="第 ${index + 1} 项物品携带部位"></td><td><input data-field="backpack_slot" value="${escapeAttr(item.backpack_slot)}"></td><td><button type="button" class="remove-row" data-remove-row="inventory" aria-label="移除物品">×</button></td></tr>`).join("");
   document.getElementById("weapon-empty").hidden = state.weapons.length > 0;
   document.getElementById("inventory-empty").hidden = state.inventory.length > 0;
@@ -971,32 +967,24 @@ function renderEquipment() {
   document.getElementById("add-item").disabled = state.inventory.length >= 15;
 }
 
-function equipmentCatalog(kind) {
-  return (kind === "weapon" ? bootstrapData.weapons : bootstrapData.inventory) || [];
-}
-
-function equipmentChoiceHtml(kind, item, index) {
-  const catalog = equipmentCatalog(kind);
-  const isWeapon = kind === "weapon";
-  const field = isWeapon ? "category" : "name";
-  const selectedId = item.catalog_id || catalog.find((entry) => entry.name === item[field])?.catalog_id || (item[field] ? "custom" : "");
+function weaponChoiceHtml(item, index) {
+  const catalog = bootstrapData.weapons || [];
+  const selectedId = item.catalog_id || catalog.find((entry) => entry.name === item.category)?.catalog_id || (item.category ? "custom" : "");
   const selected = catalog.find((entry) => entry.catalog_id === selectedId);
   const custom = selectedId === "custom" || Boolean(selectedId && !selected);
   const groups = new Map();
   const era = state.identity.era;
   const ordered = [...catalog].sort((a, b) => Number(b.era.includes(era)) - Number(a.era.includes(era)));
   ordered.forEach((entry) => {
-    const group = isWeapon ? entry.group : `${entry.era} · ${entry.group}`;
+    const group = entry.group;
     if (!groups.has(group)) groups.set(group, []);
     const suffix = entry.pack ? ` · ${entry.pack} 发/盒` : "";
-    const eraHint = isWeapon && era !== "其他" && !entry.era.includes(era) ? ` · ${entry.era}` : "";
+    const eraHint = era !== "其他" && !entry.era.includes(era) ? ` · ${entry.era}` : "";
     groups.get(group).push(`<option value="${escapeAttr(entry.catalog_id)}" ${entry.catalog_id === selectedId ? "selected" : ""}>${escapeHtml(entry.name + suffix + eraHint)}</option>`);
   });
   const options = [...groups].map(([group, entries]) => `<optgroup label="${escapeAttr(group)}">${entries.join("")}</optgroup>`).join("");
-  const label = isWeapon ? "武器类型" : "物品名称";
-  const customInput = custom ? `<input data-field="${field}" value="${escapeAttr(item[field] || "")}" placeholder="自定义${label}" aria-label="第 ${index + 1} 项自定义${label}">` : "";
-  const reference = !isWeapon && selected ? `<small class="equipment-choice-note">${escapeHtml(selected.era)} · 参考 $${escapeHtml(selected.price)}${selected.pack ? ` / ${escapeHtml(selected.pack)} 发` : ""}</small>` : "";
-  return `<div class="equipment-choice"><select data-catalog-kind="${kind}" aria-label="第 ${index + 1} 项${label}"><option value="" ${!selectedId ? "selected" : ""} disabled>选择${label}</option><option value="custom" ${custom ? "selected" : ""}>自定义填写</option>${options}</select>${customInput}${reference}</div>`;
+  const customInput = custom ? `<input data-field="category" value="${escapeAttr(item.category || "")}" placeholder="自定义武器类型" aria-label="第 ${index + 1} 项自定义武器类型">` : "";
+  return `<div class="equipment-choice"><select data-catalog-kind="weapon" aria-label="第 ${index + 1} 项武器类型"><option value="" ${!selectedId ? "selected" : ""} disabled>选择武器类型</option><option value="custom" ${custom ? "selected" : ""}>自定义填写</option>${options}</select>${customInput}</div>`;
 }
 
 function weaponSkillOptions(current) {
@@ -1014,30 +1002,21 @@ function resolveWeaponSkill(sourceSkill) {
   return sourceSkill;
 }
 
-function applyEquipmentDefinition(kind, item, definition) {
-  if (kind === "weapon") {
+function handleWeaponSelection(event) {
+  if (!event.target.dataset.catalogKind) return;
+  const row = event.target.closest("[data-equipment-index]");
+  if (!row) return;
+  const item = state.weapons[Number(row.dataset.equipmentIndex)];
+  if (!item) return;
+  if (event.target.value === "custom") item.catalog_id = "custom";
+  else {
+    const definition = (bootstrapData.weapons || []).find((entry) => entry.catalog_id === event.target.value);
+    if (!definition) return;
     if (!item.name || item.name === item.category) item.name = definition.name;
     item.category = definition.name;
     item.skill = resolveWeaponSkill(definition.skill);
     for (const field of ["damage", "range", "attacks", "ammo", "malfunction"]) item[field] = definition[field];
-  } else {
-    item.name = definition.name;
-  }
-  item.catalog_id = definition.catalog_id;
-}
-
-function handleEquipmentSelection(event) {
-  const kind = event.target.dataset.catalogKind;
-  if (!kind) return;
-  const row = event.target.closest("[data-equipment-index]");
-  if (!row) return;
-  const item = (kind === "weapon" ? state.weapons : state.inventory)[Number(row.dataset.equipmentIndex)];
-  if (!item) return;
-  if (event.target.value === "custom") item.catalog_id = "custom";
-  else {
-    const definition = equipmentCatalog(kind).find((entry) => entry.catalog_id === event.target.value);
-    if (!definition) return;
-    applyEquipmentDefinition(kind, item, definition);
+    item.catalog_id = definition.catalog_id;
   }
   renderEquipment(); markChanged();
 }
@@ -1087,7 +1066,7 @@ async function validateDraft(showBusy) {
     if (!response.ok) throw new Error(data.detail || "规则检查失败。");
     validationData = data.validation;
     state.derived = data.derived;
-    renderDerived(); renderBudgets(); renderReview(); renderLiveSummary();
+    renderDerived(); renderReview(); renderLiveSummary();
     return validationData;
   } catch (error) {
     if (generation !== draftGeneration) return null;
