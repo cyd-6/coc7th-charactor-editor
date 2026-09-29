@@ -5,11 +5,10 @@ import io
 import re
 import shutil
 import tempfile
-import warnings
+import threading
 from datetime import datetime
 from pathlib import Path
 
-from openpyxl import load_workbook
 from PIL import Image
 
 from ..catalog import TemplateCatalog, split_occupation_skill_token
@@ -18,6 +17,7 @@ from ..rules import RuleEngine
 
 
 FORMULA_ERRORS = {"#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NUM!", "#NULL!"}
+WINDOWS_EXCEL_SLOT = threading.BoundedSemaphore(1)
 
 
 class ExcelUnavailableError(RuntimeError):
@@ -31,6 +31,14 @@ class ExcelExportError(RuntimeError):
 def _safe_filename(value: str) -> str:
     text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value.strip())
     return text.strip(" .") or "未命名调查员"
+
+
+def _set_cell_value(cell, value) -> None:
+    # COM interprets strings (e.g. =1+1 or 00123) while OOXML already stores
+    # them as literal text. Excel's quote prefix is not part of the saved value.
+    if isinstance(value, str) and value and hasattr(cell, '_oleobj_'):
+        value = "'" + value
+    cell.Value2 = value
 
 
 class ExcelExporter:
@@ -49,12 +57,21 @@ class ExcelExporter:
             messages = "；".join(issue.message for issue in report.errors)
             raise ExcelExportError(f"调查员数据未通过导出检查：{messages}")
 
+        if not WINDOWS_EXCEL_SLOT.acquire(timeout=120):
+            raise ExcelExportError("Excel 导出繁忙，请稍后重试。")
+        try:
+            return self._export_windows(draft, portrait_bytes, generated_at, report)
+        finally:
+            WINDOWS_EXCEL_SLOT.release()
+
+    def _export_windows(self, draft, portrait_bytes, generated_at, report):
         try:
             import pythoncom
             import win32com.client
         except ImportError as exc:
             raise ExcelUnavailableError(
-                "完整 Excel 导出需要 Windows 桌面版 Microsoft Excel 和 pywin32。请运行 run.bat 安装依赖。"
+                "完整 Excel 导出需要 Windows 桌面版 Microsoft Excel 和 pywin32。"
+                "请使用项目虚拟环境执行 python -m pip install -r requirements.txt。"
             ) from exc
 
         source_hash = hashlib.sha256(self.catalog.template_path.read_bytes()).hexdigest()
@@ -72,29 +89,41 @@ class ExcelExporter:
         try:
             shutil.copy2(self.catalog.template_path, output_path)
 
-            excel = win32com.client.DispatchEx("Excel.Application")
+            try:
+                excel = win32com.client.DispatchEx("Excel.Application")
+            except Exception as exc:
+                raise ExcelUnavailableError(
+                    "无法启动 Windows 桌面版 Microsoft Excel。请确认已安装并完成首次启动，"
+                    "能够手动打开 XLSX；PDF 导出不需要 Excel。"
+                ) from exc
             excel.Visible = False
             excel.DisplayAlerts = False
             excel.AskToUpdateLinks = False
             excel.EnableEvents = False
+            excel.ScreenUpdating = False
+            excel.AutomationSecurity = 3  # msoAutomationSecurityForceDisable
             workbook = excel.Workbooks.Open(
                 str(output_path),
                 UpdateLinks=0,
                 ReadOnly=False,
                 IgnoreReadOnlyRecommended=True,
                 AddToMru=False,
+                CorruptLoad=0,
             )
+            excel.Calculation = -4135  # xlCalculationManual, only this isolated instance.
             self._write_character(workbook, draft, portrait_bytes, temp_path)
             excel.CalculateFullRebuild()
+            # Deliver an automatically recalculating workbook to the user.
+            excel.Calculation = -4105  # xlCalculationAutomatic
             workbook.Save()
-            workbook.Close(SaveChanges=True)
+            workbook.Close(SaveChanges=False)
             workbook = None
             excel.Quit()
             excel = None
 
             data = output_path.read_bytes()
             sheet_count = self._verify_export(output_path)
-        except ExcelUnavailableError:
+        except (ExcelUnavailableError, ExcelExportError):
             raise
         except Exception as exc:  # COM reports many environment-specific exception types.
             raise ExcelExportError(f"Excel 导出失败：{exc}") from exc
@@ -109,6 +138,8 @@ class ExcelExporter:
                     excel.Quit()
                 except Exception:
                     pass
+            workbook = None
+            excel = None
             pythoncom.CoUninitialize()
             temp_manager.cleanup()
 
@@ -158,7 +189,7 @@ class ExcelExporter:
             "W10": derived.mp,
         }
         for cell, value in values.items():
-            sheet.Range(cell).Value2 = value
+            _set_cell_value(sheet.Range(cell), value)
 
         self._write_date(sheet, identity.current_date)
         if occupation.is_custom:
@@ -172,9 +203,9 @@ class ExcelExporter:
             cell_map = self.catalog.skill_cell(skill.template_slot)
             if cell_map is None:
                 continue
-            sheet.Range(cell_map.name_cell).Value2 = skill.name
+            _set_cell_value(sheet.Range(cell_map.name_cell), skill.name)
             if cell_map.specialization_cell:
-                sheet.Range(cell_map.specialization_cell).Value2 = skill.specialization
+                _set_cell_value(sheet.Range(cell_map.specialization_cell), skill.specialization)
             definition = definitions.get(skill.template_slot)
             expected_dynamic_base = None
             if definition and definition.base_formula:
@@ -193,12 +224,12 @@ class ExcelExporter:
 
         self._write_background(sheet, draft)
         experience = draft.experience
-        sheet.Range("F113").Value2 = experience.name or "无"
+        _set_cell_value(sheet.Range("F113"), experience.name or "无")
         if experience.name:
-            sheet.Range("BC26").Value2 = experience.name
+            _set_cell_value(sheet.Range("BC26"), experience.name)
             sheet.Range("BC28").Value2 = experience.san_loss
             sheet.Range("BG28").Value2 = experience.skill_points
-            sheet.Range("BC30").Value2 = experience.notes
+            _set_cell_value(sheet.Range("BC30"), experience.notes)
         self._write_assets(sheet, draft)
         self._write_weapons(sheet, draft)
         self._write_inventory(sheet, draft)
@@ -214,20 +245,20 @@ class ExcelExporter:
         except ValueError:
             return
         sheet.Range("G8").Value2 = parsed.year
-        sheet.Range("J8").Value2 = f"{parsed.month}月"
-        sheet.Range("L8").Value2 = f"{parsed.day}日"
-        sheet.Range("N8").Value2 = parsed.strftime("%H：%M")
+        _set_cell_value(sheet.Range("J8"), f"{parsed.month}月")
+        _set_cell_value(sheet.Range("L8"), f"{parsed.day}日")
+        _set_cell_value(sheet.Range("N8"), parsed.strftime("%H：%M"))
 
     @staticmethod
     def _write_custom_occupation(workbook, draft: CharacterDraft) -> None:
         occupation = draft.occupation
         sheet = workbook.Worksheets("职业列表")
-        sheet.Range("C3").Value2 = occupation.name
-        sheet.Range("D3").Value2 = occupation.credit_range_text
+        _set_cell_value(sheet.Range("C3"), occupation.name)
+        _set_cell_value(sheet.Range("D3"), occupation.credit_range_text)
         sheet.Range("F3").Formula = f"={occupation.point_formula}"
-        sheet.Range("G3").Value2 = occupation.summary
-        sheet.Range("K3").Value2 = occupation.contacts
-        sheet.Range("M3").Value2 = occupation.description
+        _set_cell_value(sheet.Range("G3"), occupation.summary)
+        _set_cell_value(sheet.Range("K3"), occupation.contacts)
+        _set_cell_value(sheet.Range("M3"), occupation.description)
         # Credit is always selected separately in the Web UI. It must not take
         # one of the eight editable occupation slots needed for XLSX round trips.
         selected = [skill for skill in draft.skills if skill.selected_occupation and skill.template_slot != "F26"]
@@ -235,7 +266,7 @@ class ExcelExporter:
             cell = f"I{3 + offset}"
             if offset < len(selected):
                 token_name, _ = split_occupation_skill_token(selected[offset].name)
-                sheet.Range(cell).Value2 = token_name
+                _set_cell_value(sheet.Range(cell), token_name)
             else:
                 sheet.Range(cell).MergeArea.ClearContents()
         sheet.Range("J11").Value2 = max(0, 8 - min(8, len(selected)))
@@ -255,7 +286,7 @@ class ExcelExporter:
             "W77": background.personal_story,
         }
         for cell, value in mapping.items():
-            sheet.Range(cell).Value2 = value
+            _set_cell_value(sheet.Range(cell), value)
 
         key_rows = {
             "形象描述": 61,
@@ -285,7 +316,10 @@ class ExcelExporter:
         # The template owns the annual lookup, source notes and validations.
         # Only input cells are changed here so exported workbooks stay editable.
         fx.Range("K1").Value2 = assets.exchange_year
-        fx.Range("K2").Value2 = assets.currency
+        if str(fx.Range("K2").Formula).replace("'", "").replace("$", "") == "=人物卡!S62":
+            _set_cell_value(sheet.Range("S62"), assets.currency)
+        else:
+            _set_cell_value(fx.Range("K2"), assets.currency)
         credit = "'人物卡'!$R$26"
         base_formulas = [
             f'LOOKUP({credit},{{0,1,10,50,90,99}},{{0.5,2,10,50,250,5000}})',
@@ -300,9 +334,10 @@ class ExcelExporter:
             else:
                 fx.Range(f"K{row}").Value2 = float(value)
         # Fixed conversion formulas and labels belong to the prepared template.
-        sheet.Range("BO37").NumberFormat = "General"
+        # Keep the template's General rate format. Some localized Excel COM
+        # installations reject the English "General" format string.
         for cell in ("I62", "O62", "L62", "B75", "F75", "J75", "N75", "R75"):
-            sheet.Range(cell).NumberFormat = "#,##0.00"
+            sheet.Range(cell).MergeArea.NumberFormat = "#,##0.00"
             sheet.Range(cell).MergeArea.ShrinkToFit = True
         sheet.Range("S62").MergeArea.ShrinkToFit = True
         sheet.Range("O61").Value2 = "当前现金"
@@ -317,7 +352,7 @@ class ExcelExporter:
         }
         for cell, value in mapping.items():
             if value != "":
-                sheet.Range(cell).Value2 = value
+                _set_cell_value(sheet.Range(cell), value)
 
     @staticmethod
     def _write_weapons(sheet, draft: CharacterDraft) -> None:
@@ -340,15 +375,15 @@ class ExcelExporter:
                 f"AJ{row}": weapon.malfunction,
             }
             for cell, value in values.items():
-                sheet.Range(cell).Value2 = value
+                _set_cell_value(sheet.Range(cell), value)
 
     @staticmethod
     def _write_inventory(sheet, draft: CharacterDraft) -> None:
         for row, item in zip(range(79, 94), draft.inventory, strict=False):
-            sheet.Range(f"B{row}").Value2 = item.status
-            sheet.Range(f"D{row}").Value2 = item.location
-            sheet.Range(f"F{row}").Value2 = item.name
-            sheet.Range(f"N{row}").Value2 = item.backpack_slot
+            _set_cell_value(sheet.Range(f"B{row}"), item.status)
+            _set_cell_value(sheet.Range(f"D{row}"), item.location)
+            _set_cell_value(sheet.Range(f"F{row}"), item.name)
+            _set_cell_value(sheet.Range(f"N{row}"), item.backpack_slot)
 
     @staticmethod
     def _write_portrait(sheet, portrait_bytes: bytes, temp_path: Path) -> None:
@@ -373,46 +408,7 @@ class ExcelExporter:
         sheet.Shapes.AddPicture(str(portrait_path), False, True, left, top, width, height)
 
     def _verify_export(self, output_path: Path) -> int:
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message="Data Validation extension is not supported and will be removed",
-            )
-            # Normal mode materializes every sheet while the warning filter is
-            # active. The books remain verification-only and are never saved.
-            formula_book = load_workbook(output_path, read_only=False, data_only=False)
-            value_book = load_workbook(output_path, read_only=False, data_only=True)
-        try:
-            if tuple(formula_book.sheetnames) != self.catalog.sheet_names:
-                raise ExcelExportError("导出工作簿的工作表数量或顺序与原模板不一致。")
-            if formula_book["更新说明"]["P3"].value not in (None, ""):
-                raise ExcelExportError("导出工作簿仍含模板版本说明：更新说明!P3")
-            expected = {
-                ("简化卡 骰娘导入", "T29"): '=IF(W29=0,"",人物卡!AB42)',
-                ("简化卡 骰娘导入", "T34"): '=IF(W34=0,"",人物卡!AB47)',
-            }
-            for (sheet_name, cell), formula in expected.items():
-                actual = str(formula_book[sheet_name][cell].value or "").replace("'", "")
-                if actual != formula:
-                    raise ExcelExportError(f"模板兼容性修复未写入：{sheet_name}!{cell}")
-            for cell in ("AT15", "AT16", "AT17"):
-                actual = str(formula_book["附表"][cell].value or "").replace("'", "")
-                if "附表!$V$226" not in actual or "#REF!" in actual:
-                    raise ExcelExportError(f"模板兼容性修复未写入：附表!{cell}")
-            for sheet in formula_book.worksheets:
-                for row in sheet.iter_rows():
-                    for cell in row:
-                        value = cell.value
-                        if not isinstance(value, str) or not value.startswith("="):
-                            continue
-                        if "#REF!" in value:
-                            raise ExcelExportError(f"导出结果仍含断裂引用：{sheet.title}!{cell.coordinate}")
-                        calculated = value_book[sheet.title][cell.coordinate].value
-                        if calculated in FORMULA_ERRORS:
-                            raise ExcelExportError(
-                                f"导出结果含公式错误 {calculated}：{sheet.title}!{cell.coordinate}"
-                            )
-            return len(formula_book.sheetnames)
-        finally:
-            formula_book.close()
-            value_book.close()
+        from .xlsx_verify import verify_workbook
+
+        return verify_workbook(output_path, self.catalog.sheet_names,
+                               getattr(self.catalog, 'template_revision_note', None))

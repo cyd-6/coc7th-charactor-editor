@@ -27,6 +27,8 @@ class DraftPayloadError(ValueError):
 def catalog_payload(catalog: TemplateCatalog) -> dict[str, Any]:
     return {
         "meta": {
+            "template_filename": catalog.template_path.name,
+            "template_revision_note": catalog.template_revision_note,
             "source_sha256": catalog.source_sha256,
             "sheet_count": len(catalog.sheet_names),
             "occupation_count": len(catalog.occupations),

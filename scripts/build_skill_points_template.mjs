@@ -4,13 +4,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FileBlob, SpreadsheetFile, Workbook } from '@oai/artifact-tool';
+import { templatePath } from './template_config.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const out = path.join(root, 'test-output/skill-points-upgrade');
 await fs.mkdir(out, { recursive: true });
 const mode = process.argv[2] ?? 'build';
 if (mode === 'preview' || mode === 'verify') {
-  const source = process.argv[3] ?? path.join(root, 'assets/templates/COC7空白卡CY26.2.xlsx');
+  const source = process.argv[3] ?? templatePath;
   const book = await SpreadsheetFile.importXlsx(await FileBlob.load(source));
   console.log((await book.inspect({ kind:'region', sheetId:'人物卡', range:'J15:Q18', maxChars:1500, tableMaxRows:4, tableMaxCols:8 })).ndjson);
   const picture = await book.render({ sheetName:'人物卡', range:'B14:W22', scale:2, format:'png' });

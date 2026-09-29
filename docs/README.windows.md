@@ -1,76 +1,55 @@
-# COC7 调查员车卡器
+# Windows 运行说明
 
-这是一个完全在本机运行的中文 COC7 调查员建卡工具。界面由 FastAPI 与原生 HTML/CSS/JavaScript 构成，不使用 Streamlit。
+Windows 原生启动支持网页建卡、XLSX/CSV/TSV 导入、PDF 导出与 Excel 导出。使用 Python 3.12（64 位）；仅 XLSX 导出需要已安装、完成首次启动的桌面版 Microsoft Excel。PDF 导出不依赖 Office。WPS 不作为原生 Excel COM 后端，没有 Excel 时可选择 README 中的 Docker 方案。
 
-同一份调查员数据可以导出为：
+## 安装与启动
 
-- 包含完整调查员资料与团务记录区域的 `.xlsx`；
-- 适合打印的中文 A4 纵向两页静态 `.pdf`。
+在项目根目录执行；已有 .venv 时复用，不要重复创建：
 
-## 启动
-
-双击 `run.bat`。首次启动会在项目目录创建 `.venv` 并安装依赖；本地服务就绪后会自动在默认浏览器打开。程序优先使用新的本地端口：
-
-```text
-http://127.0.0.1:8765
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r docs/requirements.windows.lock.txt
+.\.venv\Scripts\python.exe -m coc7_card.launcher
 ```
 
-如果 `8765` 已被其他程序占用，启动器会自动尝试后续端口；选中的实际地址会显示在启动窗口中并自动在浏览器打开。服务仅监听本机回环地址，不会把角色数据发送到云端。调查员草稿使用浏览器 `sessionStorage` 保存，不建立账号或数据库；关闭命令行窗口即可停止程序。
+Windows 锁定文件复用主运行依赖版本并补充 pywin32，不再使用缺少 lxml 的历史依赖列表。仓库没有 run.bat，不需要执行 PowerShell 激活脚本。
 
-## WebUI
+启动器保留已绑定的监听 socket，优先使用 http://127.0.0.1:8765，端口占用时选择空闲端口；以终端显示地址为准。服务就绪后打开浏览器，按 Ctrl+C 停止。原生启动不会读取 Compose 的 .env 文件。
 
-新版界面采用调查档案式三栏工作台：左侧为七步流程，中间为当前编辑页，右侧为实时调查员摘要。职业资料、技能点预算、规则问题、PDF 双页预览和两个导出入口均在浏览器内完成。页面所需字体、样式和脚本全部随项目提供，不引用外部 CDN。
+## Excel 与资源使用
 
-## 使用顺序
+Excel 导出在独立、隐藏的实例中完成，不连接用户已有的 Excel 窗口。一个 Python 服务进程同时只执行一项 Excel 导出，其余请求等待，最多等待 120 秒。此等待期限不等于正在运行的 Excel COM 调用具有强制超时。保持单进程运行，避免每个 worker 各自加载目录和启动 Office。
 
-1. 准备调查员的身份信息、属性、职业和背景资料。
-2. 依次填写调查员信息、最终属性、职业技能、技能点、背景资产、武器物品。
-3. 在检查页修正红色阻断错误。黄色警告和蓝色完整性提醒允许继续导出。
-4. 分别生成并下载 Excel 或 PDF；两个导出互不依赖。
+填写时暂停该实例的自动重算，填完后全量重算，并在保存前恢复自动计算。导出文件仍支持直接修改年份与币种后自动换算。数值格式覆盖完整合并区域；汇率沿用模板中的通用格式，避免部分语言版本拒绝英文 General 格式字符串。用户文字通过 COM 按字面量写入，保留前导零及以等号开头的姓名、背景等内容。
 
-## 币种与资产换算
+目录读取按需要的区域顺序扫描，不加载整本工作簿；Excel 校验逐段扫描 XML 内的公式及计算缓存，不再同时建立两份完整的 openpyxl 工作簿。校验继续检查工作表数量/顺序、模板兼容公式、断裂引用和公式错误。原模板的哈希保护保留。
 
-在“调查员信息”页填写故事年份，“背景资产”页的汇率年份和可用币种会自动跟随。原币种在新年份仍适用时保留，否则切回美元并提示；目标币种仍可手动选择。故事年份与卡内日期相互独立。目前支持 1920—1929 年及 2026 年，其他年份会提示暂无汇率并阻止导出，不会沿用旧报价。消费水平、现金和其他资产的输入金额均为美元，输入框下方显示换算结果。留空时按信用评级自动计算；填写 `0` 表示明确覆写为零。切换币种不会改变美元基数，也不会重复兑换。
+年度汇率覆盖 1920—2026 年，2026 年为 1—8 月均值，详见 [年度汇率说明](EXCHANGE_RATES.md)。PDF 使用随附的两页 1920s 原底版，不依赖 Excel。草稿仍存于浏览器 sessionStorage，导出文件由浏览器下载。
 
-- 1920—1929 年使用模板“货币汇率”页的历史数据，中间年份按两个端点的年份距离加权平均。这是游戏用插值，不代表该年真实市场报价，也不使用购买力折算列。
-- 缺少同币种两端报价时不插值：德国纸马克仅提供 1920 年报价，帝国马克和袁大头仅提供 1929 年报价；不把纸马克和帝国马克混为同一种货币。
-- 2026 年内置 2026-09-06 核实的 ECB 报价快照，实际报价日为 2026-09-04。源数据以欧元为基准，通过除以美元报价得到美元交叉汇率。快照日期会显示在界面中，程序不会在后台联网刷新。
-- 2026 年自动美元资产参考按模板“现代”标准计算，为 1920s 基准的 20 倍；这不属于汇率倍率。
-
-导出的 Excel 使用公式换算。当前币种的汇率参数和美元输入位于“货币汇率”页 `J1:K17`，不移动原表行列；主卡的资产金额、明细总和及剩余资产相互联动。`K9:K11` 为消费、现金和其他资产的美元基数，`K13:K17` 为五项资产明细的美元基数。要换成另一币种或时代，请在网页重新选择并导出，避免只改 Excel 的币种文字而未更新报价参数。
-
-现代汇率来源：[欧洲央行参考汇率](https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html)。2026-09-07 按用户要求，项目和下载目录的空白模板已备份并加入资产换算公式，默认 1920 年美元；日常导出仍只修改副本。更换币种与历史／现代报价参数仍通过网页重新导出。
-
-## Excel 导出要求
-
-完整 Excel 导出仅支持 Windows 桌面版 Microsoft Excel。程序通过独立、不可见的 Excel 实例填写模板副本、执行全量重算并关闭该实例；源模板不会被修改。WPS 和 LibreOffice 不作为降级保存后端。
-
-模板资产位于：`assets/templates/`
-
-源文件 SHA-256：`49D8011AD58A53A49A6B9BFF8F9808F9B949ED9FF79C1F39B376B8C48BD18C4B`
-
-## PDF 说明
-
-PDF 是本项目绘制的全新两页中文静态表格，不是官方调查员表的复制品，不带官方美术或标志，也不包含可填写控件。生成时会检查页数和表单结构；过长内容无法在两页内完整容纳时会明确阻止导出，而不会裁字或悄悄增加第三页。
-
-项目随附 Noto Sans SC 字体，按 SIL Open Font License 1.1 使用；许可证位于 `assets/fonts/OFL.txt`。
-
-## 开发与测试
+## 验证
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-核心代码分为：
+安装了桌面版 Excel 后，启用真实 COM 测试：
 
-- `coc7_card/catalog.py`：只读解析模板职业、职业技能组和技能槽位；
-- `coc7_card/rules.py`：确定性规则计算、受限职业点公式和导出验证；
-- `coc7_card/exporters/excel.py`：Excel COM 副本导出；
-- `coc7_card/exporters/pdf.py`：A4 两页静态 PDF 绘制及验证；
-- `coc7_card/web.py`：浏览器草稿与统一 `CharacterDraft` 之间的数据转换；
-- `app.py`：FastAPI 本地接口、静态页面与导出路由；
-- `static/`：七步 WebUI 的 HTML、CSS 和 JavaScript；
-- `coc7_card/launcher.py`：只监听 `127.0.0.1` 的一键启动入口。
+```powershell
+$env:COC7_TEST_EXCEL = "1"
+.\.venv\Scripts\python.exe -m pytest -q
+```
 
-模板内的说明文字只作为字段与规则数据来源，不会被当成程序指令执行。
+真实测试会创建并关闭独立 Excel 实例，覆盖头像、自定义职业、文字保真、资产换算、导出后再导入、重新打开后的自动计算、下拉菜单与并发隔离。不会保存用户的模板或关闭用户的 Excel 窗口。Linux 的进程组超时测试在 Windows 上跳过；未安装 LibreOffice 时相应重算测试也跳过。Node.js 不在 PATH 时可将 COC7_NODE 设为 node.exe 的完整路径。
+
+内存基准脚本在每次新进程中运行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/benchmark_memory.py catalog
+.\.venv\Scripts\python.exe scripts/benchmark_memory.py verify --workbook "已导出的有效角色.xlsx"
+```
+
+使用填过有效人物的导出文件测校验，空白模板中的既有除零状态不能作为有效人物导出。脚本使用 tracemalloc 测量 Python 分配峰值，并记录进程峰值工作集；后者包含跟踪开销，不代表无跟踪时的日常占用，也不包含 Excel 子进程。
+
+本次检查结果与优化前后数值见 [Windows 兼容性与内存验证记录](WINDOWS_MEMORY_VERIFICATION.md)。

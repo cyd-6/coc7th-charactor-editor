@@ -5,13 +5,159 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { FileBlob, SpreadsheetFile, Workbook } from '@oai/artifact-tool';
+import { templatePath } from './template_config.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const out = path.join(root, 'test-output/fx-upgrade');
 await fs.mkdir(out, { recursive: true });
 const mode = process.argv[2] ?? 'build';
+if (mode === 'calculator-compact') {
+  const source = process.argv[3] ?? templatePath;
+  const destination = path.join(root,'test-output/fx-compact');
+  await fs.mkdir(destination,{recursive:true});
+  const reference = await SpreadsheetFile.importXlsx(await FileBlob.load(source));
+  const original = reference.worksheets.getItem('货币汇率');
+  const book = Workbook.create();
+  const fx = book.worksheets.add('货币汇率');
+  for (const [cell,value] of [['A3','当前年份'],['A4','原始金额'],['A7','目标金额'],['E3','']]) fx.getRange(cell).values = [[value]];
+  fx.getRange('E3').format.fill = '#FFFFFF';
+  // Calculation fixtures are not merged; retain the user's actual inputs.
+  for (const cell of ['C4','C5','C6','C9','C12','C13']) fx.getRange(cell).values = original.getRange(cell).values;
+  fx.getRange('C4').setNumberFormat('General');
+  // With no separate status field visible, report invalid selections in the
+  // target amount itself instead of silently leaving an unexplained blank.
+  fx.getRange('C7').formulas = [['=IF(C9="可用",IF(C5=C6,ROUND(C4,2),ROUND(C4/C12*C13,2)),C9)']];
+  fx.getRange('C7').setNumberFormat('#,##0.00');
+  fx.getRange('C7:F7').conditionalFormats.addCustom('$C$9<>"可用"',{fill:'#FCE6DF',font:{color:'#963B28'}});
+  book.recalculate();
+  console.log((await book.inspect({kind:'region',sheetId:'货币汇率',range:'C7',maxChars:500})).ndjson);
+  await (await SpreadsheetFile.exportXlsx(book)).save(path.join(destination,'fx-donor.xlsx'));
+  await fs.writeFile(path.join(destination,'fx-manifest.json'),JSON.stringify({
+    upgrade:'compact-v1',cells:['A3','A4','A7','E3','C4','C7'],names:[],cardCells:[],appendixCells:[],
+  },null,2));
+  process.exit(0);
+}
+if (mode === 'calculator-preview') {
+  const reference = await SpreadsheetFile.importXlsx(await FileBlob.load(process.argv[3]));
+  // Rendering snapshot only. The delivered file keeps all formulas, and its
+  // caches are verified in native Excel (this renderer's MATCH differs).
+  const snapshot = JSON.parse(await fs.readFile(process.argv[4], 'utf8'));
+  for (const [name,cells] of Object.entries(snapshot)) {
+    const sheet = reference.worksheets.getItem(name);
+    for (const [address,value] of Object.entries(cells)) {
+      if (sheet.getRange(address).formulas[0][0]) sheet.getRange(address).values = [[value]];
+    }
+  }
+  const compact = process.argv[5] === 'compact';
+  for (const [sheetName,range,name] of [['货币汇率',compact?'A3:F7':'A1:F27','final-calculator'],['人物卡','B60:U62','final-assets']]) {
+    const picture = await reference.render({sheetName,range,scale:1.5,format:'png'});
+    await fs.writeFile(path.join(root,`test-output/${compact?'fx-compact':'fx-calculator'}/${name}.png`),new Uint8Array(await picture.arrayBuffer()));
+  }
+  console.log((await reference.inspect({kind:'region',sheetId:'货币汇率',range:'C3:F9',maxChars:1000,tableMaxRows:7,tableMaxCols:4})).ndjson);
+  process.exit(0);
+}
+if (mode === 'calculator') {
+  // A scoped upgrade of the user's latest saved workbook, not a data rebuild.
+  const source = process.argv[3] ?? templatePath;
+  const destination = path.join(root, 'test-output/fx-calculator');
+  await fs.mkdir(destination, { recursive: true });
+  const reference = await SpreadsheetFile.importXlsx(await FileBlob.load(source));
+  const oldFx = reference.worksheets.getItem('货币汇率');
+  const book = Workbook.create();
+  const fx = book.worksheets.add('货币汇率');
+  const card = book.worksheets.add('人物卡');
+  const data = JSON.parse(await fs.readFile(path.join(root, 'assets/rates/annual.json'), 'utf8'));
+  const last = 35 + data.quotes.length;
+  // These values are a calculation fixture only; the merger leaves the user's
+  // complete annual table, sources, named lists and USD inputs untouched.
+  fx.getRange(`A35:V${last}`).values = oldFx.getRange(`A35:V${last}`).values;
+  const updated = oldFx.getRange('A1').values[0][0] === '货币换算';
+  const year = oldFx.getRange('K1').values[0][0];
+  const currency = reference.worksheets.getItem('人物卡').getRange('S62').formulas[0][0]
+    ? oldFx.getRange('K2').values[0][0]
+    : reference.worksheets.getItem('人物卡').getRange('S62').values[0][0];
+  const merges = ['A1:F1','A2:F2','A10:F10','A11:F11','A24:F24','A25:F25','A26:F26','A27:F27'];
+  for (let row=3;row<=9;row++) merges.push(`A${row}:B${row}`,`C${row}:${row===3?'D':'F'}${row}`);
+  merges.push('E3:F3');
+  for (let row=12;row<=23;row++) merges.push(`A${row}:B${row}`,`C${row}:F${row}`);
+  for (const range of merges) fx.mergeCells(range);
+  fx.getRange('A1:F31').format.font = {name:'Microsoft YaHei',size:11,color:'#202C30'};
+  fx.getRange('A1:F31').format.verticalAlignment = 'center';
+  fx.getRange('A1:F31').format.wrapText = true;
+  [10,14,28,12,25.1796875,18].forEach((width,index) => {
+    fx.getRangeByIndexes(0,index,31,1).format.columnWidth = width;
+  });
+  const value = (cell,text) => {fx.getRange(cell).values = [[text]];};
+  const formula = (cell,text) => {fx.getRange(cell).formulas = [[text]];};
+  value('A1','货币换算');
+  fx.getRange('A1:F1').format.font = {name:'Microsoft YaHei',size:16,bold:true};
+  value('A2','黄色格可编辑。先选年份，再选择原币种和目标币种。');
+  for (const [row,label] of Object.entries({3:'换算年份',4:'输入金额',5:'原币种',6:'目标币种',7:'换算结果',8:'1 原币兑换目标币',9:'换算状态',12:'原币 / 1 美元',13:'目标币 / 1 美元',14:'原币来源',15:'原币期间及口径',16:'原币资料链接',17:'原币报价提示',18:'目标币来源',19:'目标币期间及口径',20:'目标币资料链接',21:'目标币报价提示',22:'主表资产币种',23:'主表资产年份'})) value(`A${row}`,label);
+  value('C3',updated ? oldFx.getRange('C3').values[0][0] : year);
+  value('C4',updated ? oldFx.getRange('C4').values[0][0] : 1);
+  value('C5',updated ? oldFx.getRange('C5').values[0][0] : data.quotes.find(q=>q.year===year && q.code==='USD').name);
+  value('C6',updated ? oldFx.getRange('C6').values[0][0] : currency);
+  value('E3','1920—2026 年');
+  value('A10','算法：金额 ÷ 原币兑美元报价 × 目标币兑美元报价；结果保留两位小数。');
+  value('A11','报价与来源');
+  value('A24','换算器与主表币种独立。主表资产栏的黄色币种格可直接切换。');
+  formula('A25','=HYPERLINK("#\'货币汇率\'!K1","主表资产汇率年份和美元基准：右侧 K 列")');
+  formula('A26','=HYPERLINK("#\'货币汇率\'!A35","查看年度数据与完整说明（第 35 行起）")');
+  formula('A27','=HYPERLINK("#\'货币汇率\'!X36","查看保留的原始历史参考（右侧 X36）")');
+  for (const range of ['C3:D3','C4:F4','C5:F5','C6:F6']) {
+    fx.getRange(range).format.fill = '#FFF0BF';
+    fx.getRange(range).format.font.color = '#174E83';
+  }
+  fx.getRange('C7:F7').format.fill = '#E9F0ED';
+  fx.getRange('C7:F7').format.font.bold = true;
+  fx.getRange('C4').setNumberFormat('#,##0.############');
+  fx.getRange('C7').setNumberFormat('#,##0.00');
+  for (const cell of ['C8','C12','C13']) fx.getRange(cell).setNumberFormat('General');
+  for (const row of [1,11]) fx.getRange(`A${row}:F${row}`).format.borders = {bottom:{style:'thin',color:'#A8B8B0'}};
+  const index = (input,helper) => formula(helper,`=IF(COUNTIF($M$36:$M$${last},$C$3&"|"&${input})=0,0,MATCH($C$3&"|"&${input},$M$36:$M$${last},0))`);
+  value('U3','换算器原币匹配行'); value('U4','换算器目标匹配行');
+  index('$C$5','V3'); index('$C$6','V4');
+  const lookup = (column,helper) => `INDEX($${column}$36:$${column}$${last},$${helper})`;
+  for (const [cell,helper] of [['C12','V$3'],['C13','V$4']]) {
+    formula(cell,`=IF($${helper}=0,"",IF(${lookup('D',helper)}="可用",${lookup('E',helper)},""))`);
+  }
+  formula('C9','=IF(NOT(ISNUMBER(C3)),"年份须为 1920—2026 的整数",IF(OR(C3<1920,C3>2026,C3<>INT(C3)),"年份须为 1920—2026 的整数",IF(NOT(ISNUMBER(C4)),"请输入数值金额",IF(V3=0,"请重新选择原币种",IF(V4=0,"请重新选择目标币种",IF(OR(NOT(ISNUMBER(C12)),NOT(ISNUMBER(C13))),"缺少报价，请重新选择币种",IF(OR(C12<=0,C13<=0),"报价须大于零","可用")))))))');
+  formula('C8','=IF(C9="可用",C13/C12,"")');
+  formula('C7','=IF(C9="可用",IF(C5=C6,ROUND(C4,2),ROUND(C4/C12*C13,2)),"")');
+  for (const [row,col,helper] of [[14,'G','V$3'],[16,'H','V$3'],[17,'T','V$3'],[18,'G','V$4'],[20,'H','V$4'],[21,'T','V$4']]) {
+    formula(`C${row}`,`=IF($${helper}=0,"",IF(${lookup(col,helper)}="","",${lookup(col,helper)}))`);
+  }
+  for (const [row,helper] of [[15,'V$3'],[19,'V$4']]) formula(`C${row}`,`=IF($${helper}=0,"",${lookup('I',helper)}&"；"&${lookup('F',helper)})`);
+  formula('C22',"='人物卡'!$S$62");
+  fx.getRange('K1').values = [[year]]; // Not merged; retains current asset year.
+  formula('C23','=K1');
+  formula('K2',"='人物卡'!$S$62");
+  value('K24','在人物卡资产栏 S62 选择币种，K1 修改资产汇率年份；改年后币种失效时重新选择。左上换算器可独立选择两种货币。美元基准不代表逐年购买力。');
+  fx.getRange('K2').format.fill = '#E9F0ED';
+  fx.getRange('C3').dataValidation = {rule:{type:'whole',operator:'between',formula1:1920,formula2:2026}};
+  for (const cell of ['C5','C6']) fx.getRange(cell).dataValidation = {rule:{type:'list',formula1:'INDIRECT("FX_Y"&$C$3)'}};
+  fx.getRange('C9:F9').conditionalFormats.addCustom('$C$9<>"可用"',{fill:'#FCE6DF',font:{color:'#963B28'}});
+  card.getRange('S61').values = [['币种可选']];
+  card.getRange('B60').formulas = [['=IF(S62="","资产","资产（"&S62&"）")']];
+  card.getRange('S62').values = [[currency]];
+  card.getRange('S62:U62').format.fill = '#FFF0BF';
+  card.getRange('S62').dataValidation = {rule:{type:'list',formula1:'COC7_FX_ASSET_OPTIONS'}};
+  const heights = [30,32,28,28,42,42,40,32,38,40,28,28,28,44,38,66,64,44,38,66,64,42,28,40,30,30,30];
+  heights.forEach((height,index)=> {fx.getRange(`A${index+1}`).format.rowHeight = height;});
+  book.recalculate();
+  console.log((await book.inspect({kind:'region',sheetId:'货币汇率',range:'A3:F9',maxChars:2000,tableMaxRows:7,tableMaxCols:6})).ndjson);
+  const picture = await book.render({sheetName:'货币汇率',range:'A1:F10',scale:1.5,format:'png'});
+  await fs.writeFile(path.join(destination,'calculator.png'),new Uint8Array(await picture.arrayBuffer()));
+  await (await SpreadsheetFile.exportXlsx(book)).save(path.join(destination,'fx-donor.xlsx'));
+  await fs.writeFile(path.join(destination,'fx-manifest.json'),JSON.stringify({
+    upgrade:'cross-v1',last,merges,cardCells:['B60','S61','S62'],appendixCells:[],
+    names:[{name:'COC7_FX_CALCULATOR_SCHEMA',formula:'"cross-v1"'},
+      {name:'COC7_FX_ASSET_OPTIONS',formula:'INDIRECT("FX_Y"&\'货币汇率\'!$K$1)'}],
+  },null,2));
+  process.exit(0);
+}
 if (mode === 'preview' || mode === 'verify') {
-  const template = process.argv[3] ?? path.join(root, 'assets/templates/COC7空白卡CY26.2.xlsx');
+  const template = process.argv[3] ?? templatePath;
   const book = await SpreadsheetFile.importXlsx(await FileBlob.load(template));
   console.log(book.help('workbook.render', { include: 'index,examples,notes', maxChars: 2800 }).ndjson);
   console.log((await book.inspect({kind:'region', sheetId:'货币汇率', range:'J1:K17', maxChars:2200, tableMaxRows:17, tableMaxCols:2})).ndjson);
@@ -33,7 +179,7 @@ const book = Workbook.create();
 const fx = book.worksheets.add('货币汇率');
 const card = book.worksheets.add('人物卡');
 const appendix = book.worksheets.add('附表');
-const reference = await SpreadsheetFile.importXlsx(await FileBlob.load(path.join(root,'assets/templates/COC7空白卡CY26.2.xlsx')));
+const reference = await SpreadsheetFile.importXlsx(await FileBlob.load(templatePath));
 const first = 36, last = first + data.quotes.length - 1;
 const label = q => q.name;
 const headers = ['年份','币种标识','当年实际币名','报价状态','1 美元兑换本币','统计口径','机构或文献','原始资料链接','观测期间','引用文件','说明与限制','换算说明','匹配键','选择项','原始报价','原始方向','转换倍率','原表来源评级','原表位置','报价提示'];

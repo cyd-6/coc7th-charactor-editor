@@ -146,7 +146,7 @@ def test_excel_preserves_template_and_recalculates(client, payload, year, curren
         assert values["人物卡"]["I62"].value == pytest.approx(round(10 * (20 if year == 2026 else 1) * rate, 2), abs=0.01)
         assert values["货币汇率"]["K11"].value == 0
         assert formulas["货币汇率"]["K9"].data_type == "f"
-        assert formulas["更新说明"]["P3"].value is None
+        assert formulas["更新说明"]["P3"].value == catalog.template_revision_note
         assert values["附表"]["J6"].value != 0  # The source template caches zero here.
         assert sum(values["附表"][f"{column}8"].value for column in "GHIJKL") == pytest.approx(1)
         if custom:
@@ -313,12 +313,14 @@ def test_editing_exported_point_columns_recalculates_independently(client, paylo
 
 
 def test_missing_libreoffice_has_actionable_error(client, payload, monkeypatch):
+    monkeypatch.setattr("coc7_card.exporters.factory.excel_exporter", LinuxExcelExporter)
     monkeypatch.setattr("coc7_card.exporters.excel_linux.shutil.which", lambda _name: None)
     response = export(client, "excel", payload)
     assert response.status_code == 422
     assert "LibreOffice Calc" in response.json()["detail"]
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX process-group termination uses a shebang executable')
 def test_recalculation_timeout_stops_process(tmp_path):
     runner = tmp_path / "slow-office"
     pid_file = tmp_path / "process.pid"

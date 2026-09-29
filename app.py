@@ -14,6 +14,7 @@ from starlette.concurrency import run_in_threadpool
 
 from coc7_card.catalog import TemplateCatalog
 from coc7_card.models import Attributes
+from coc7_card.template_config import TEMPLATE_PATH
 from coc7_card.rules import FormulaError, RuleEngine
 from coc7_card.web import (
     DraftPayloadError,
@@ -26,7 +27,6 @@ from coc7_card.web import (
 ROOT = Path(__file__).resolve().parent
 STATIC_PATH = ROOT / "static"
 ASSETS_PATH = ROOT / "assets"
-TEMPLATE_PATH = ASSETS_PATH / "templates" / "COC7空白卡CY26.2.xlsx"
 FONT_PATH = ASSETS_PATH / "fonts" / "NotoSansSC-Regular.ttf"
 MAX_PORTRAIT_BYTES = 8 * 1024 * 1024
 MAX_WORKBOOK_BYTES = 12 * 1024 * 1024

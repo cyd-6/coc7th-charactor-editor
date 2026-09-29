@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 from .models import OccupationDefinition, SkillChoiceGroup, SkillDefinition
 from .currency import load_exchange_data
@@ -70,6 +71,7 @@ class TemplateCatalog:
     experience_packages: tuple[dict, ...] = ()
     currency_quotes: tuple[dict, ...] = ()
     currency_metadata: dict | None = None
+    template_revision_note: str | None = None
 
     @classmethod
     def load(cls, template_path: str | Path) -> "TemplateCatalog":
@@ -83,10 +85,9 @@ class TemplateCatalog:
                 "ignore",
                 message="Data Validation extension is not supported and will be removed",
             )
-            # Normal mode is intentional here: read-only mode makes repeated
-            # random cell access across the 232-column occupation matrix
-            # quadratic. The workbook is never saved by this parser.
-            workbook = load_workbook(path, read_only=False, data_only=False)
+            # Stream each required region once. Random cell() calls in read-only
+            # mode would repeatedly parse the XML, so readers use bounded rows.
+            workbook = load_workbook(path, read_only=True, data_only=False, keep_links=False)
 
         try:
             exchange_data = load_exchange_data()
@@ -98,6 +99,10 @@ class TemplateCatalog:
                 raise ValueError("模板尚未区分经历包点与成长点数，请更新 XLSX 模板后重启服务。")
             occupations = _load_occupations(workbook)
             skills, skill_cells = _load_skills(workbook)
+            revision_note = next(workbook['更新说明'].iter_rows(
+                min_row=3, max_row=3, min_col=16, max_col=16, values_only=True))[0]
+            if revision_note is not None and (not isinstance(revision_note,str) or revision_note.startswith('=')):
+                raise ValueError('模板版本说明必须为文本或空白：更新说明!P3')
             return cls(
                 template_path=path,
                 source_sha256=source_hash,
@@ -105,17 +110,19 @@ class TemplateCatalog:
                 occupations=tuple(occupations),
                 skills=tuple(skills),
                 skill_cells=tuple(skill_cells),
+                template_revision_note=revision_note,
                 weapons=tuple(_load_weapons(workbook)),
                 inventory=tuple(_load_inventory(workbook)),
                 currency_quotes=tuple(exchange_data["quotes"]),
                 currency_metadata={k: v for k, v in exchange_data.items() if k != "quotes"},
                 experience_packages=tuple({
-                    "name": str(workbook["附表"].cell(row, 2).value),
-                    "san_description": str(workbook["附表"].cell(row, 3).value),
-                    "skill_points": int(workbook["附表"].cell(row, 4).value),
-                    "notes": str(workbook["附表"].cell(row, 5).value).strip(),
+                    "name": str(values[0]),
+                    "san_description": str(values[1]),
+                    "skill_points": int(values[2]),
+                    "notes": str(values[3]).strip(),
                     "minimum_age": {21: 25, 22: 20, 23: 30}.get(row, 0),
-                } for row in range(20, 25)),
+                } for row, values in enumerate(workbook["附表"].iter_rows(
+                    min_row=20, max_row=24, min_col=2, max_col=5, values_only=True), 20)),
             )
         finally:
             workbook.close()
@@ -143,8 +150,8 @@ def _load_weapons(workbook) -> list[WeaponDefinition]:
     group = ""
     # 人物卡!G54:L58 validates against B2:B105. B contains era-dependent
     # display formulas; U holds their literal names, independent of Excel caches.
-    for row in range(2, 106):
-        read = lambda col: _literal_text(sheet.cell(row, col).value)
+    for row, values in enumerate(sheet.iter_rows(min_row=2, max_row=105, max_col=21, values_only=True), 2):
+        read = lambda col: _literal_text(values[col - 1])
         group = read(13).replace("\n", "") or group
         if read(21):
             result.append(WeaponDefinition(
@@ -197,17 +204,20 @@ def _load_inventory(workbook) -> list[InventoryDefinition]:
         ("1920s", "近战装备", 119, 127, 24, 26, 0),
     )
     result = []
+    first_row = min(section[2] for section in sections)
+    rows = tuple(sheet.iter_rows(min_row=first_row, max_row=max(s[3] for s in sections),
+                                 max_col=27, values_only=True))
     for era, group, first, last, name_col, price_col, pack_col in sections:
         for row in range(first, last + 1):
-            cell = sheet.cell(row, name_col)
-            name = _literal_text(cell.value)
-            price = _literal_text(sheet.cell(row, price_col).value)
+            values = rows[row - first_row]
+            name = _literal_text(values[name_col - 1])
+            price = _literal_text(values[price_col - 1])
             if not name or not price:
                 continue
             result.append(InventoryDefinition(
-                catalog_id=f"inventory:{cell.coordinate}", name=name,
+                catalog_id=f"inventory:{get_column_letter(name_col)}{row}", name=name,
                 group=group, era=era, price=price,
-                pack=_literal_text(sheet.cell(row, pack_col).value) if pack_col else "",
+                pack=_literal_text(values[pack_col - 1]) if pack_col else "",
             ))
     return result
 
@@ -242,24 +252,24 @@ def _parse_credit_range(value: object) -> tuple[int, int]:
 def _load_occupations(workbook) -> list[OccupationDefinition]:
     sheet = workbook["职业列表"]
     matrix = workbook["本职技能"]
+    matrix_rows = tuple(matrix.iter_rows(max_row=min(matrix.max_row, 72), values_only=True))
     id_to_column: dict[int, int] = {}
-    for column in range(2, matrix.max_column + 1):
-        value = matrix.cell(1, column).value
+    for column, value in enumerate(matrix_rows[0][1:], 1):
         if isinstance(value, (int, float)):
             id_to_column[int(value)] = column
 
     occupations: list[OccupationDefinition] = []
-    for row in range(3, min(sheet.max_row, 232) + 1):
-        occupation_id = sheet.cell(row, 1).value
-        name = sheet.cell(row, 2).value
+    for values in sheet.iter_rows(min_row=3, max_row=min(sheet.max_row, 232), max_col=13, values_only=True):
+        occupation_id = values[0]
+        name = values[1]
         if not isinstance(occupation_id, (int, float)) or int(occupation_id) <= 1:
             continue
         if not isinstance(name, str) or not name.strip() or name.startswith("="):
             continue
 
         occupation_id = int(occupation_id)
-        credit_min, credit_max = _parse_credit_range(sheet.cell(row, 4).value)
-        point_formula = str(sheet.cell(row, 6).value or "=EDU*4").lstrip("=")
+        credit_min, credit_max = _parse_credit_range(values[3])
+        point_formula = str(values[5] or "=EDU*4").lstrip("=")
         matrix_column = id_to_column.get(occupation_id)
         fixed_skills: list[str] = []
         group_members: dict[str, list[str]] = {marker: [] for marker in GROUP_LABELS}
@@ -268,16 +278,16 @@ def _load_occupations(workbook) -> list[OccupationDefinition]:
 
         if matrix_column:
             for marker_row, marker in zip(range(3, 7), GROUP_LABELS, strict=True):
-                value = matrix.cell(marker_row, matrix_column).value
+                value = matrix_rows[marker_row - 1][matrix_column]
                 if isinstance(value, (int, float)):
                     group_counts[marker] = max(0, int(value))
-            free_value = matrix.cell(7, matrix_column).value
+            free_value = matrix_rows[6][matrix_column]
             if isinstance(free_value, (int, float)):
                 free_choices = max(0, int(free_value))
 
-            for matrix_row in range(8, min(matrix.max_row, 72) + 1):
-                slot_name = normalize_skill_name(matrix.cell(matrix_row, 1).value)
-                marker_value = matrix.cell(matrix_row, matrix_column).value
+            for matrix_values in matrix_rows[7:]:
+                slot_name = normalize_skill_name(matrix_values[0])
+                marker_value = matrix_values[matrix_column]
                 if not slot_name or marker_value in (None, "", 0):
                     continue
                 marker_text = str(marker_value).strip()
@@ -305,9 +315,9 @@ def _load_occupations(workbook) -> list[OccupationDefinition]:
                 credit_min=credit_min,
                 credit_max=credit_max,
                 point_formula=point_formula,
-                summary=str(sheet.cell(row, 7).value or "").strip(),
-                contacts=str(sheet.cell(row, 11).value or "").strip(),
-                description=str(sheet.cell(row, 13).value or "").strip(),
+                summary=str(values[6] or "").strip(),
+                contacts=str(values[10] or "").strip(),
+                description=str(values[12] or "").strip(),
                 fixed_skills=tuple(dict.fromkeys(fixed_skills)),
                 choice_groups=choice_groups,
                 free_choices=free_choices,
@@ -346,19 +356,20 @@ def _load_skills(workbook) -> tuple[list[SkillDefinition], list[ExcelSkillCell]]
         ("left", 6, 8, 10, 12, 14, 16, 18),
         ("right", 28, 30, 32, 34, 36, 38, 40),
     )
-    for row in range(16, 50):
+    for row, values in enumerate(sheet.iter_rows(min_row=16, max_row=49, max_col=40, values_only=True), 16):
         for side, name_col, spec_col, base_col, extra_col, occ_col, int_col, total_col in sides:
-            raw_name = sheet.cell(row, name_col).value
+            raw_name = values[name_col - 1]
             if not isinstance(raw_name, str) or not raw_name.strip() or raw_name.startswith("="):
                 continue
             name = normalize_skill_name(raw_name)
-            specialization = str(sheet.cell(row, spec_col).value or "").strip()
+            specialization = str(values[spec_col - 1] or "").strip()
             base_value, base_formula = _base_value_and_formula(
                 name,
-                sheet.cell(row, base_col).value,
+                values[base_col - 1],
                 specialization,
             )
-            template_slot = sheet.cell(row, name_col).coordinate
+            address = lambda column: f"{get_column_letter(column)}{row}"
+            template_slot = address(name_col)
             specializable = bool(specialization) or name.endswith(("：", ":")) or bool(re.search(r"[①②③]$", name))
             skills.append(
                 SkillDefinition(
@@ -374,14 +385,14 @@ def _load_skills(workbook) -> tuple[list[SkillDefinition], list[ExcelSkillCell]]
             cells.append(
                 ExcelSkillCell(
                     template_slot=template_slot,
-                    name_cell=sheet.cell(row, name_col).coordinate,
-                    specialization_cell=sheet.cell(row, spec_col).coordinate,
-                    base_cell=sheet.cell(row, base_col).coordinate,
-                    extra_cell=sheet.cell(row, extra_col).coordinate,
-                    experience_cell=sheet.cell(row, extra_col + 1).coordinate,
-                    occupation_cell=sheet.cell(row, occ_col).coordinate,
-                    interest_cell=sheet.cell(row, int_col).coordinate,
-                    total_cell=sheet.cell(row, total_col).coordinate,
+                    name_cell=address(name_col),
+                    specialization_cell=address(spec_col),
+                    base_cell=address(base_col),
+                    extra_cell=address(extra_col),
+                    experience_cell=address(extra_col + 1),
+                    occupation_cell=address(occ_col),
+                    interest_cell=address(int_col),
+                    total_cell=address(total_col),
                 )
             )
     return skills, cells

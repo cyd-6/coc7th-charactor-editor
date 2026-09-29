@@ -105,12 +105,13 @@ def test_unit_transitions_and_ytd_are_explicit():
 
 
 def test_template_contains_the_same_dataset_and_yearly_dropdowns():
-    book=load_workbook(ROOT/'assets/templates/COC7空白卡CY26.2.xlsx',data_only=False)
+    from coc7_card.template_config import TEMPLATE_PATH
+    book=load_workbook(TEMPLATE_PATH,data_only=False)
     try:
         assert len(book.sheetnames)==14
         assert book.defined_names['COC7_FX_DATA_SHA256'].attr_text.strip('"')==DATA['data_sha256']
         sheet=book['货币汇率']
-        assert not sheet.row_dimensions[2].hidden
+        assert not sheet.row_dimensions[3].hidden
         for row,q in enumerate(DATA['quotes'],36):
             assert sheet.cell(row,1).value==q['year']
             assert sheet.cell(row,2).value==q['code']
@@ -126,7 +127,11 @@ def test_template_contains_the_same_dataset_and_yearly_dropdowns():
             actual=[c.value for row in sheet[destinations[0][1]] for c in row]
             assert actual==[q['name'] for q in currency_options(DATA['quotes'],year)]
         validations={str(v.sqref):v for v in sheet.data_validations.dataValidation}
-        assert validations['K2'].formula1=='INDIRECT("FX_Y"&$K$1)'
+        assert validations['C5'].formula1=='INDIRECT("FX_Y"&$C$3)'
+        assert validations['C6'].formula1=='INDIRECT("FX_Y"&$C$3)'
+        assert 'K2' not in validations
+        assert book['人物卡']['S62'].data_type != 'f'
+        assert any(v.formula1 == 'COC7_FX_ASSET_OPTIONS' for v in book['人物卡'].data_validations.dataValidation)
         assert validations['K1'].formula1=='1920'
         assert validations['K1'].formula2=='2026'
     finally: book.close()
@@ -157,7 +162,7 @@ def test_exported_excel_can_change_year_and_currency_independently(tmp_path):
         try:
             fx=book.Worksheets('货币汇率')
             fx.Range('K1').Value2=year
-            fx.Range('K2').Value2=q['name']
+            book.Worksheets('人物卡').Range('S62').Value2=q['name']
             incoming=tmp_path/f'input-{year}.xlsx';output=tmp_path/f'result-{year}.xlsx'
             book.save(incoming)
         finally: book.close()

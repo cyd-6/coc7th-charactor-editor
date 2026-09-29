@@ -1,4 +1,4 @@
-"""Read the editable cells of a CY26.2 investigator card into a Web UI draft.
+"""Read the editable cells of a CY26.3 or compatible CY26.2 investigator card.
 
 This deliberately does not open Office or recalculate an uploaded workbook.
 XML values and saved formula caches are read from a bounded in-memory package;
@@ -101,7 +101,7 @@ class _Workbook:
             if relation:
                 self.paths[sheet.get("name")] = relation
         if require_card and "人物卡" not in self.paths:
-            raise ExcelImportError("未找到受支持的“人物卡”工作表。请导入 CY26.2 模板或本工具导出的 XLSX。")
+            raise ExcelImportError("未找到受支持的“人物卡”工作表。请导入 CY26.3／CY26.2 模板或本工具导出的 XLSX。")
 
     def warn(self, message: str) -> None:
         if message not in self.warnings:
@@ -202,7 +202,7 @@ def _recognize(book: _Workbook, catalog: TemplateCatalog) -> None:
     score = sum(book.text(cell, report=False).replace("\n", "") == expected for cell, expected in anchors.items())
     skills = sum(normalize_skill_name(book.text(item.template_slot, report=False)) == normalize_skill_name(item.name) for item in catalog.skills)
     if score < 5 or skills < 12 or "STR" not in book.text("S3", report=False):
-        raise ExcelImportError("表格布局与 CY26.2 调查员卡不一致。请使用原始模板或本工具导出的 XLSX。")
+        raise ExcelImportError("表格布局与 CY26.3／CY26.2 调查员卡不一致。请使用原始模板或本工具导出的 XLSX。")
 
 
 def _identity(book: _Workbook) -> tuple[dict, dict]:
@@ -394,7 +394,9 @@ def _assets(book: _Workbook, catalog: TemplateCatalog, identity: dict) -> dict:
     annual = "汇率年份" in book.text("J1", "货币汇率", report=False) and "目标币种" in book.text("J2", "货币汇率", report=False)
     if annual:
         year = book.integer("K1", 0, "货币汇率")
-        currency = book.text("K2", "货币汇率")
+        currency_link = re.sub(r"[\s$'=]", "", book.formula("K2", "货币汇率") or "")
+        # Read the authoritative editable cell, not an old saved formula cache.
+        currency = book.text("S62") if currency_link == "人物卡!S62" else book.text("K2", "货币汇率")
     else:
         year = int(identity["current_date"][:4]) if identity["current_date"] else (2026 if identity["era"] == "现代" else 1920)
         currency = book.text("S62")
@@ -556,7 +558,7 @@ def import_investigator(data: bytes, catalog: TemplateCatalog) -> dict:
     except ExcelImportError:
         raise
     except (zipfile.BadZipFile, zlib.error, KeyError, ET.XMLSyntaxError, ValueError, TypeError, OverflowError, OSError, RuntimeError) as exc:
-        raise ExcelImportError("无法读取此表格。请确认文件未损坏、未加密，并使用 CY26.2 模板或本工具导出的 XLSX。") from exc
+        raise ExcelImportError("无法读取此表格。请确认文件未损坏、未加密，并使用 CY26.3／CY26.2 模板或本工具导出的 XLSX。") from exc
     finally:
         if book is not None:
             book.archive.close()

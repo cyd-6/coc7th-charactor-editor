@@ -1,4 +1,5 @@
-# Linux runtime; generated from the verified Python 3.12 environment.
+# Shared runtime versions; Docker uses this file directly.
+# Windows adds pywin32 through docs/requirements.windows.lock.txt.
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1
