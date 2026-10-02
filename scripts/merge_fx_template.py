@@ -296,8 +296,79 @@ def prepare_calculator_layout(book, manifest):
     sheet.PageSetup.PrintArea = '$A$1:$F$27'
 
 
+def reveal_annual_rows_and_columns(root):
+    """Unhide and ungroup annual records; leave technical helper columns alone."""
+    for row in root.find(tag('sheetData')):
+        if int(row.get('r')) >= 35:
+            for attr in ('hidden', 'collapsed', 'outlineLevel'):
+                row.attrib.pop(attr, None)
+    columns = root.find(tag('cols'))
+    for column in list(columns):
+        first, last = int(column.get('min')), int(column.get('max'))
+        if first > 20:
+            continue
+        if last > 20:
+            remainder = copy.deepcopy(column)
+            remainder.set('min', '21')
+            columns.insert(list(columns).index(column) + 1, remainder)
+            column.set('max', '20')
+        for attr in ('hidden', 'collapsed', 'outlineLevel'):
+            column.attrib.pop(attr, None)
+
+
+def mask_top_asset_helpers(root, styles, number_format=';;;'):
+    """Suppress only display, never the original helper values or formulas."""
+    numbers = styles.find(tag('numFmts'))
+    if numbers is None:
+        numbers = ET.Element(tag('numFmts'), count='0')
+        styles.insert(0, numbers)
+    number = next((n for n in numbers if n.get('formatCode') == number_format), None)
+    if number is None:
+        number = ET.SubElement(numbers, tag('numFmt'),
+                               numFmtId=str(max([163, *(int(n.get('numFmtId')) for n in numbers)]) + 1),
+                               formatCode=number_format)
+        numbers.set('count', str(len(numbers)))
+    formats = styles.find(tag('cellXfs'))
+    overlays = {}
+    addresses = {f'{col}{row}' for col in ('J', 'K') for row in range(3, 8)}
+    for cell in root.iter(tag('c')):
+        if cell.get('r') not in addresses:
+            continue
+        original = int(cell.get('s', '0'))
+        if formats[original].get('numFmtId') == number.get('numFmtId'):
+            continue
+        if original not in overlays:
+            overlay = copy.deepcopy(formats[original])
+            overlay.set('numFmtId', number.get('numFmtId'))
+            overlay.set('applyNumberFormat', '1')
+            overlays[original] = len(formats)
+            formats.append(overlay)
+        cell.set('s', str(overlays[original]))
+    formats.set('count', str(len(formats)))
+
+
+def reveal_annual_data(template, donor_path, output):
+    """Layout-only patch: preserve all other parts and every calculation cache."""
+    with ZipFile(donor_path) as donor:
+        authored_styles = ET.fromstring(donor.read('xl/styles.xml'))
+        number_format = next(n.get('formatCode') for n in authored_styles.find(tag('numFmts'))
+                             if n.get('formatCode') == ';;;')
+    with ZipFile(template) as source:
+        parts = {item.filename: source.read(item.filename) for item in source.infolist()}
+        path = worksheet_paths(parts)['货币汇率']
+        root, styles = ET.fromstring(parts[path]), ET.fromstring(parts['xl/styles.xml'])
+        reveal_annual_rows_and_columns(root)
+        mask_top_asset_helpers(root, styles, number_format)
+        parts[path] = ET.tostring(root, encoding='UTF-8', xml_declaration=True)
+        parts['xl/styles.xml'] = ET.tostring(styles, encoding='UTF-8', xml_declaration=True)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with ZipFile(output, 'w') as result:
+            for item in source.infolist():
+                result.writestr(item, parts[item.filename])
+
+
 def prepare_compact_layout(sheet, source, maps):
-    """Expose only the five existing controls, retaining every backing cell."""
+    """Keep five top controls and the complete annual table directly visible."""
     for n,row in sheet.rows.items():
         if n < 3 or n > 7: row.set('hidden','1')
         else:
@@ -305,8 +376,8 @@ def prepare_compact_layout(sheet, source, maps):
             row.set('ht','42');row.set('customHeight','1')
     for col in sheet.root.find(tag('cols')):
         if int(col.get('min')) >= 7: col.set('hidden','1')
-    # G:AE holds all right-hand sources and the existing asset controls.
-    # Blank columns after it need no XML styles or million-cell allocations.
+    reveal_annual_rows_and_columns(sheet.root)
+    mask_top_asset_helpers(sheet.root, sheet.Parent.tree('xl/styles.xml'))
     view = sheet.root.find(tag('sheetViews'))[0]
     view.set('topLeftCell','A3');view.set('showGridLines','0')
     selection = view.find(tag('selection'))
@@ -359,6 +430,13 @@ if __name__=='__main__':
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--donor',type=Path,default=ROOT/'test-output/fx-upgrade/fx-donor.xlsx')
     parser.add_argument('--manifest',type=Path,default=ROOT/'test-output/fx-upgrade/fx-manifest.json')
+    parser.add_argument('--annual-visible', action='store_true',
+                        help='Reveal annual data without touching formulas or cached values')
     args=parser.parse_args()
-    merge(args.template,args.donor,args.manifest,args.output)
+    if args.annual_visible:
+        if args.template.resolve() == args.output.resolve():
+            parser.error('Use a separate output, then verify it before replacing the template')
+        reveal_annual_data(args.template,args.donor,args.output)
+    else:
+        merge(args.template,args.donor,args.manifest,args.output)
     print(args.output)

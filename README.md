@@ -95,7 +95,7 @@ COC7_EXCEL_TIMEOUT=120
 
 ## Linux 源码运行与验证
 
-正式模板版本和文件名统一记录在 `assets/templates/manifest.json`，应用、测试和模板维护脚本共用此配置。CY26.3 使用五项精简换算页，主表资产币种可下拉选择。更换模板后需重启已运行的服务；Docker 使用重新构建的镜像，不会自动载入宿主机文件。
+正式模板版本和文件名统一记录在 `assets/templates/manifest.json`，应用、测试和模板维护脚本共用此配置。CY26.3 顶部保留五项精简换算区，下方完整显示 1920—2026 年年度明细，不隐藏或折叠；主表资产币种可下拉选择。更换模板后需重启已运行的服务；Docker 使用重新构建的镜像，不会自动载入宿主机文件。
 
 准备 Python 3.12 和 LibreOffice Calc（XLSX 导出需要，`libreoffice` 或 `soffice` 须在 PATH 中），在项目根目录执行；已有 `.venv` 时复用：
 

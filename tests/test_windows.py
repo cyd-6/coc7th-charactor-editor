@@ -144,8 +144,12 @@ def test_native_excel_export_import_round_trip(year, code, custom, tmp_path):
         assert excel.Calculation == -4105
         fx = native.Worksheets('货币汇率')
         assert fx.Range('A1:A2').EntireRow.Hidden
-        assert fx.Range('A8:A1156').EntireRow.Hidden
-        assert fx.Range('G1:AE1').EntireColumn.Hidden
+        assert fx.Range('A8:A27').EntireRow.Hidden
+        assert not fx.Range('A35:A1156').EntireRow.Hidden
+        assert not fx.Range('A1:T1').EntireColumn.Hidden
+        assert fx.Range('U1:V1').EntireColumn.Hidden
+        assert fx.Range('X1:AE1').EntireColumn.Hidden
+        assert fx.Range('J3:K7').NumberFormat == ';;;'
         assert not fx.Range('A3:A7').EntireRow.Hidden
         assert fx.Range('C5').Validation.Type == 3
         assert fx.Range('C6').Validation.Type == 3

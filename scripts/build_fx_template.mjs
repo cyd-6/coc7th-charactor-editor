@@ -11,6 +11,38 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const out = path.join(root, 'test-output/fx-upgrade');
 await fs.mkdir(out, { recursive: true });
 const mode = process.argv[2] ?? 'build';
+if (mode === 'years-preview') {
+  const source = process.argv[3] ?? templatePath;
+  const destination = process.argv[4] ?? path.join(root,'test-output/fx-years-visible');
+  await fs.mkdir(destination,{recursive:true});
+  const book = await SpreadsheetFile.importXlsx(await FileBlob.load(source));
+  if (process.argv[5]) {
+    const snapshot = JSON.parse(await fs.readFile(process.argv[5],'utf8'));
+    const fx = book.worksheets.getItem('货币汇率');
+    // Preview only: use the native saved result, not this renderer's MATCH.
+    for (const [address,value] of Object.entries(snapshot['货币汇率'] ?? {})) {
+      if (fx.getRange(address).formulas[0][0]) fx.getRange(address).values = [[value]];
+    }
+  }
+  console.log((await book.inspect({kind:'region',sheetId:'货币汇率',range:'A35:F39',maxChars:1500,tableMaxRows:5,tableMaxCols:6})).ndjson);
+  for (const [range,name] of [['A3:F7','calculator'],['A35:F46','annual-start']]) {
+    const picture = await book.render({sheetName:'货币汇率',range,scale:1.5,format:'png'});
+    await fs.writeFile(path.join(destination,`${name}.png`),new Uint8Array(await picture.arrayBuffer()));
+  }
+  process.exit(0);
+}
+if (mode === 'years-visible') {
+  const destination = path.join(root,'test-output/fx-years-visible');
+  await fs.mkdir(destination,{recursive:true});
+  const book = Workbook.create();
+  const fx = book.worksheets.add('货币汇率');
+  // J:K must be visible for annual sources below. Hide only the five top
+  // helper labels/results by display format, leaving their values intact.
+  fx.getRange('J3:K7').setNumberFormat(';;;');
+  book.recalculate();
+  await (await SpreadsheetFile.exportXlsx(book)).save(path.join(destination,'visibility-donor.xlsx'));
+  process.exit(0);
+}
 if (mode === 'calculator-compact') {
   const source = process.argv[3] ?? templatePath;
   const destination = path.join(root,'test-output/fx-compact');
@@ -19,6 +51,7 @@ if (mode === 'calculator-compact') {
   const original = reference.worksheets.getItem('货币汇率');
   const book = Workbook.create();
   const fx = book.worksheets.add('货币汇率');
+  fx.getRange('J3:K7').setNumberFormat(';;;');
   for (const [cell,value] of [['A3','当前年份'],['A4','原始金额'],['A7','目标金额'],['E3','']]) fx.getRange(cell).values = [[value]];
   fx.getRange('E3').format.fill = '#FFFFFF';
   // Calculation fixtures are not merged; retain the user's actual inputs.

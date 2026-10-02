@@ -33,9 +33,18 @@ def test_calculator_layout_and_independent_asset_authority():
         assert fx['X39'].value == 1920
         assert fx.sheet_view.topLeftCell == 'A3'
         assert [fx[f'A{row}'].value for row in range(3,8)] == ['当前年份','原始金额','原币种','目标币种','目标金额']
-        assert all(fx.row_dimensions[row].hidden for row in [1,2,8,9,35,36,1156])
+        assert all(fx.row_dimensions[row].hidden for row in [1,2,8,9])
         assert all(not fx.row_dimensions[row].hidden for row in range(3,8))
-        assert all(c.hidden for c in fx.column_dimensions.values() if c.min >= 7)
+        for row in range(35, 1157):
+            assert not fx.row_dimensions[row].hidden
+            assert not fx.row_dimensions[row].collapsed
+            assert fx.row_dimensions[row].outlineLevel == 0
+        assert {fx.cell(row, 1).value for row in range(36, 1157)} == set(range(1920, 2027))
+        assert all(not c.hidden and not c.collapsed and not c.outlineLevel
+                   for c in fx.column_dimensions.values() if c.min <= 20)
+        assert all(c.hidden for c in fx.column_dimensions.values() if c.min >= 21)
+        assert all(fx[f'{col}{row}'].number_format == ';;;'
+                   for col in ('J', 'K') for row in range(3, 8))
         assert book.defined_names['COC7_FX_ASSET_OPTIONS'].attr_text == 'INDIRECT("FX_Y"&\'货币汇率\'!$K$1)'
         assert fx.print_area == "'货币汇率'!$A$3:$F$7"
     finally:
