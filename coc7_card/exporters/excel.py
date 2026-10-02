@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import re
 import shutil
 import tempfile
@@ -9,11 +8,12 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from PIL import Image
-
+from ..branch_workbook import write_branch_section
 from ..catalog import TemplateCatalog, split_occupation_skill_token
 from ..models import CharacterDraft, ExcelExportResult
+from ..portraits import prepare_portrait
 from ..rules import RuleEngine
+from ..skill_specializations import is_branch_slot
 
 
 FORMULA_ERRORS = {"#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NUM!", "#NULL!"}
@@ -222,6 +222,7 @@ class ExcelExporter:
                 sheet.Range(cell_map.occupation_cell).Value2 = int(skill.occupation_points)
                 sheet.Range(cell_map.interest_cell).Value2 = int(skill.interest_points)
 
+        write_branch_section(workbook, draft, _set_cell_value)
         self._write_background(sheet, draft)
         experience = draft.experience
         _set_cell_value(sheet.Range("F113"), experience.name or "无")
@@ -266,6 +267,8 @@ class ExcelExporter:
             cell = f"I{3 + offset}"
             if offset < len(selected):
                 token_name, _ = split_occupation_skill_token(selected[offset].name)
+                if is_branch_slot(selected[offset].template_slot):
+                    token_name = selected[offset].display_name
                 _set_cell_value(sheet.Range(cell), token_name)
             else:
                 sheet.Range(cell).MergeArea.ClearContents()
@@ -388,8 +391,7 @@ class ExcelExporter:
     @staticmethod
     def _write_portrait(sheet, portrait_bytes: bytes, temp_path: Path) -> None:
         portrait_path = temp_path / "portrait.png"
-        with Image.open(io.BytesIO(portrait_bytes)) as image:
-            converted = image.convert("RGBA")
+        with prepare_portrait(portrait_bytes) as converted:
             converted.save(portrait_path, format="PNG")
             image_width, image_height = converted.size
 

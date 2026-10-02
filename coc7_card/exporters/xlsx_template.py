@@ -1,8 +1,9 @@
 """Edit the original XLSX package without dropping Excel-only template features.
 
 The small Excel-style interface deliberately matches the existing field writer.
-openpyxl is used for reading merged ranges and expanding shared formulas only;
-it never saves the template, so x14 validations, charts and VML stay intact.
+Layout is read from the same XML that is edited, without a second workbook
+object. Only openpyxl's formula translator is used; original x14 validations,
+charts and VML stay intact.
 """
 
 from __future__ import annotations
@@ -10,14 +11,14 @@ from __future__ import annotations
 import copy
 import io
 import posixpath
-import warnings
 import zipfile
 from pathlib import Path
 
 from lxml import etree as ET
-from openpyxl import load_workbook
+from openpyxl.formula.translate import Translator
 from openpyxl.utils import get_column_letter, range_boundaries
-from PIL import Image
+
+from ..portraits import prepare_portrait
 
 
 MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -56,21 +57,25 @@ class TemplateWorkbook:
                 "".join(node.itertext())
                 for node in ET.fromstring(self.parts["xl/sharedStrings.xml"])
             ]
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="Data Validation extension is not supported")
-            self.layout = load_workbook(path, data_only=False)
         self.sheets = {
             name: TemplateSheet(self, name, self.tree(part))
             for name, part in self.paths.items()
         }
         # Expand shared formulas before overwriting any member or anchor.
         for name, sheet in self.sheets.items():
+            shared = {
+                formula.get("si"): Translator("=" + formula.text, origin=cell.get("r"))
+                for cell in sheet.cells.values()
+                if (formula := cell.find(tag("f"))) is not None
+                and formula.get("t") == "shared" and formula.text
+            }
             for cell in sheet.cells.values():
                 formula = cell.find(tag("f"))
                 if formula is not None and formula.get("t") == "shared":
-                    expression = self.layout[name][cell.get("r")].value
-                    if not isinstance(expression, str) or not expression.startswith("="):
+                    translator = shared.get(formula.get("si"))
+                    if translator is None:
                         raise ValueError(f"无法展开共享公式：{name}!{cell.get('r')}")
+                    expression = translator.translate_formula(cell.get("r"))
                     formula.attrib.clear()
                     formula.text = expression[1:]
         self.style_cache: dict[tuple, str] = {}
@@ -142,18 +147,26 @@ class TemplateWorkbook:
                 archive.writestr(name, data)
 
     def close(self) -> None:
-        self.layout.close()
+        for sheet in self.sheets.values():
+            sheet.Parent = None
+            sheet.root = sheet.data = None
+            sheet.rows.clear()
+            sheet.cells.clear()
+        self.sheets.clear()
+        self.trees.clear()
+        self.parts.clear()
+        self.paths.clear()
+        self.shared_strings.clear()
+        self.style_cache.clear()
 
     def add_portrait(self, sheet: TemplateSheet, data: bytes) -> None:
-        with Image.open(io.BytesIO(data)) as source:
-            portrait = source.convert("RGBA")
+        with prepare_portrait(data) as portrait:
             output = io.BytesIO()
             portrait.save(output, format="PNG")
             width, height = portrait.size
         # Fit the same AL3:AS9 portrait box used by the Windows exporter.
-        layout = self.layout[sheet.name]
         box_width = sum(sheet.column_pixels(column) for column in range(38, 46))
-        box_height = sum((layout.row_dimensions[row].height or layout.sheet_format.defaultRowHeight or 15) * 4 / 3 for row in range(3, 10))
+        box_height = sum(sheet.row_pixels(row) for row in range(3, 10))
         scale = min(box_width / width, box_height / height)
         width, height = width * scale, height * scale
         media = "xl/media/coc7-investigator-portrait.png"
@@ -216,7 +229,10 @@ class TemplateSheet:
         self.data = root.find(tag("sheetData"))
         self.rows = {int(row.get("r")): row for row in self.data}
         self.cells = {cell.get("r"): cell for row in self.data for cell in row if cell.tag == tag("c")}
-        self.PageSetup = self
+
+    @property
+    def PageSetup(self) -> TemplateSheet:
+        return self
 
     def Range(self, address: str) -> TemplateRange:
         return TemplateRange(self, address)
@@ -240,15 +256,27 @@ class TemplateSheet:
         return self.cells[address]
 
     def column_pixels(self, column: int) -> float:
-        layout = self.Parent.layout[self.name]
-        for dimension in layout.column_dimensions.values():
-            if (dimension.min or range_boundaries(dimension.index + "1")[0]) <= column <= (dimension.max or range_boundaries(dimension.index + "1")[0]):
-                return dimension.width * 7 + 5
-        return (layout.sheet_format.defaultColWidth or 8.43) * 7 + 5
+        for dimension in self.root.iterfind(f"{tag('cols')}/{tag('col')}"):
+            if int(dimension.get("min")) <= column <= int(dimension.get("max")):
+                return float(dimension.get("width", "13")) * 7 + 5
+        settings = self.root.find(tag("sheetFormatPr"))
+        width = float(settings.get("defaultColWidth", "0")) if settings is not None else 0
+        return (width or 8.43) * 7 + 5
+
+    def row_pixels(self, row: int) -> float:
+        element = self.rows.get(row)
+        height = float(element.get("ht", "0")) if element is not None else 0
+        if not height:
+            settings = self.root.find(tag("sheetFormatPr"))
+            height = float(settings.get("defaultRowHeight", "0")) if settings is not None else 0
+        return (height or 15) * 4 / 3
 
     @property
     def PrintArea(self) -> str:
-        return str(self.Parent.layout[self.name].print_area or "")
+        index = str(list(self.Parent.paths).index(self.name))
+        names = self.Parent.tree("xl/workbook.xml").iterfind(f"{tag('definedNames')}/{tag('definedName')}")
+        return next((entry.text or "" for entry in names
+                     if entry.get("name") == "_xlnm.Print_Area" and entry.get("localSheetId") == index), "")
 
     @PrintArea.setter
     def PrintArea(self, value: str) -> None:
@@ -278,9 +306,12 @@ class TemplateRange:
 
     @property
     def MergeArea(self) -> TemplateRange:
-        for merged in self.sheet.Parent.layout[self.sheet.name].merged_cells.ranges:
-            if self.address in merged:
-                return TemplateRange(self.sheet, str(merged))
+        left, top, right, bottom = self.bounds
+        for merged in self.sheet.root.iterfind(f"{tag('mergeCells')}/{tag('mergeCell')}"):
+            address = merged.get("ref")
+            min_col, min_row, max_col, max_row = range_boundaries(address)
+            if min_col <= left <= right <= max_col and min_row <= top <= bottom <= max_row:
+                return TemplateRange(self.sheet, address)
         return self
 
     def ClearContents(self) -> None:

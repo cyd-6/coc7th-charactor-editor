@@ -12,6 +12,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+from threading import Event
 
 import pytest
 from fastapi.testclient import TestClient
@@ -334,15 +335,54 @@ def test_recalculation_timeout_stops_process(tmp_path):
 
 @requires_calc
 def test_parallel_exports_do_not_mix_characters(payload):
+    catalog = get_catalog()
+
+    def generate(name):
+        own = {**payload, "identity": {**payload["identity"], "name": name}}
+        # Direct Python callers still share the existing Excel export lock.
+        result = LinuxExcelExporter(catalog).export(build_draft(own, catalog))
+        book = read_book(result.data, True)
+        try:
+            return book["人物卡"]["E3"].value
+        finally:
+            book.close()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert list(executor.map(generate, ["调查员甲", "调查员乙"])) == ["调查员甲", "调查员乙"]
+
+
+@requires_calc
+def test_busy_http_export_can_retry_without_mixing_characters(payload, monkeypatch):
+    started, release = Event(), Event()
+    recalculate = LinuxExcelExporter._recalculate
+
+    def held_recalculation(*args):
+        started.set()
+        assert release.wait(timeout=10), "Test did not release the first export"
+        return recalculate(*args)
+
+    monkeypatch.setattr(LinuxExcelExporter, "_recalculate", staticmethod(held_recalculation))
+
     def generate(name):
         own = {**payload, "identity": {**payload["identity"], "name": name}}
         with TestClient(app) as connection:
-            response = export(connection, "excel", own)
-            assert response.status_code == 200, response.text
-            book = read_book(response.content, True)
-            try:
-                return book["人物卡"]["E3"].value
-            finally:
-                book.close()
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        assert list(executor.map(generate, ["调查员甲", "调查员乙"])) == ["调查员甲", "调查员乙"]
+            return export(connection, "excel", own)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(generate, "调查员甲")
+        try:
+            assert started.wait(timeout=10), "First export did not reach recalculation"
+            busy = generate("调查员乙")
+            assert busy.status_code == 503, busy.text
+            assert busy.headers["Retry-After"] == "1"
+            assert "稍后重试" in busy.json()["detail"]
+        finally:
+            release.set()
+        first_response = first.result(timeout=60)
+    second_response = generate("调查员乙")
+    for response, name in ((first_response, "调查员甲"), (second_response, "调查员乙")):
+        assert response.status_code == 200, response.text
+        book = read_book(response.content, True)
+        try:
+            assert book["人物卡"]["E3"].value == name
+        finally:
+            book.close()

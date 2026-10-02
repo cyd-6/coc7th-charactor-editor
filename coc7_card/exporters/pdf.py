@@ -16,10 +16,12 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
 from ..models import CharacterDraft, PdfExportResult
+from ..portraits import prepare_portrait
 from ..rules import RuleEngine
 
 FONT_NAME = "NotoSansSC-Card"
 FONT_LOCK = threading.Lock()
+PREVIEW_LOCK = threading.Lock()
 TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "assets/templates/1920sCha.pdf"
 
 
@@ -326,9 +328,9 @@ class PdfExporter:
     @staticmethod
     def _draw_portrait(p, data):
         try:
-            with Image.open(io.BytesIO(data)) as image:
-                fitted = ImageOps.fit(ImageOps.exif_transpose(image).convert("RGB"), (376, 460), method=Image.Resampling.LANCZOS)
-                p.pdf.drawImage(ImageReader(fitted), 486.5, p.height - 190.5, width=93, height=115, mask="auto")
+            with prepare_portrait(data) as image, image.convert("RGB") as rgb:
+                with ImageOps.fit(rgb, (376, 460), method=Image.Resampling.LANCZOS) as fitted:
+                    p.pdf.drawImage(ImageReader(fitted), 486.5, p.height - 190.5, width=93, height=115, mask="auto")
         except Exception as exc:
             raise PdfExportError(f"头像无法读取：{exc}") from exc
 
@@ -338,8 +340,12 @@ class PdfExporter:
             import fitz
         except ImportError:
             return ()
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
-            return tuple(page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False).tobytes("png") for page in document)
+        with PREVIEW_LOCK:
+            try:
+                with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+                    return tuple(page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False).tobytes("png") for page in document)
+            finally:
+                fitz.TOOLS.store_shrink(100)
 
     @staticmethod
     def _verify_static_pdf(data: bytes) -> int:

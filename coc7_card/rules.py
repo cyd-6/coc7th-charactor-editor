@@ -10,6 +10,7 @@ from .models import (
     IssueSeverity,
     ValidationReport,
 )
+from .skill_specializations import MAX_SKILL_BRANCHES, is_branch_slot
 
 
 class FormulaError(ValueError):
@@ -174,6 +175,8 @@ class RuleEngine:
     @staticmethod
     def validate(draft: CharacterDraft) -> ValidationReport:
         report = ValidationReport()
+        if sum(is_branch_slot(skill.template_slot) for skill in draft.skills) > MAX_SKILL_BRANCHES:
+            report.add(IssueSeverity.ERROR, "SKILL_BRANCH_LIMIT", f"新增技能分支不能超过 {MAX_SKILL_BRANCHES} 个。", "skills")
         if not draft.identity.name.strip():
             report.add(IssueSeverity.ERROR, "IDENTITY_NAME_REQUIRED", "调查员姓名不能为空。", "identity.name")
         if not 1 <= int(draft.identity.age) <= 120:

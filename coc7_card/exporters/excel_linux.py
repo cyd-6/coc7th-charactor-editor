@@ -20,6 +20,7 @@ from ..models import CharacterDraft, ExcelExportResult
 from ..rules import RuleEngine
 from .excel import FORMULA_ERRORS, ExcelExporter, ExcelExportError, ExcelUnavailableError, _safe_filename
 from .xlsx_template import TemplateWorkbook, tag, worksheet_paths
+from .xlsx_verify import _elements
 
 
 EXCEL_SLOT = threading.BoundedSemaphore(1)
@@ -135,40 +136,42 @@ class LinuxExcelExporter(ExcelExporter):
         # Import only cell caches; do not deliver LibreOffice's rewritten file.
         # This preserves original Excel formulas, styles, validations and charts.
         with zipfile.ZipFile(calculated_path) as archive:
-            parts = {name: archive.read(name) for name in archive.namelist()}
-        paths = worksheet_paths(parts)
-        if tuple(paths) != tuple(workbook.paths):
-            raise ExcelExportError("重算后的工作表数量或顺序与原模板不一致。")
-        strings = []
-        if "xl/sharedStrings.xml" in parts:
-            strings = ["".join(node.itertext()) for node in ET.fromstring(parts["xl/sharedStrings.xml"])]
-        for name, sheet in workbook.sheets.items():
-            calculated = ET.fromstring(parts[paths[name]])
-            cells = {cell.get("r"): cell for cell in calculated.iter(tag("c"))}
-            for address, cell in sheet.cells.items():
-                if cell.find(tag("f")) is None:
+            parts = {name: archive.read(name) for name in ("xl/workbook.xml", "xl/_rels/workbook.xml.rels")}
+            paths = worksheet_paths(parts)
+            if tuple(paths) != tuple(workbook.paths):
+                raise ExcelExportError("重算后的工作表数量或顺序与原模板不一致。")
+            strings = []
+            if "xl/sharedStrings.xml" in archive.namelist():
+                strings = ["".join(node.itertext()) for node in _elements(archive, "xl/sharedStrings.xml", "si")]
+            for name, sheet in workbook.sheets.items():
+                pending = {address: cell for address, cell in sheet.cells.items() if cell.find(tag("f")) is not None}
+                if not pending:
                     continue
-                cached = cells.get(address)
-                if cached is None:
-                    raise ExcelExportError(f"公式缺少重算结果：{name}!{address}")
-                value = cached.find(tag("v"))
-                kind = cached.get("t")
-                if kind == "e" or value is not None and value.text in FORMULA_ERRORS:
-                    raise ExcelExportError(f"导出结果含公式错误 {value.text if value is not None else ''}：{name}!{address}")
-                for child in list(cell):
-                    if child.tag in {tag("v"), tag("is")}:
-                        cell.remove(child)
-                cell.attrib.pop("t", None)
-                if kind in {"s", "inlineStr"}:
-                    text = strings[int(value.text)] if kind == "s" else "".join(cached.find(tag("is")).itertext())
-                    cell.set("t", "str")
-                    ET.SubElement(cell, tag("v")).text = text
-                elif value is not None:
-                    if kind:
-                        cell.set("t", kind)
-                    cell.append(copy.deepcopy(value))
-                elif kind == "str":
-                    cell.set("t", "str")
-                    ET.SubElement(cell, tag("v"))
-                else:
-                    raise ExcelExportError(f"公式缺少缓存值：{name}!{address}")
+                for cached in _elements(archive, paths[name], "c"):
+                    address = cached.get("r")
+                    cell = pending.pop(address, None)
+                    if cell is None:
+                        continue
+                    value = cached.find(tag("v"))
+                    kind = cached.get("t")
+                    if kind == "e" or value is not None and value.text in FORMULA_ERRORS:
+                        raise ExcelExportError(f"导出结果含公式错误 {value.text if value is not None else ''}：{name}!{address}")
+                    for child in list(cell):
+                        if child.tag in {tag("v"), tag("is")}:
+                            cell.remove(child)
+                    cell.attrib.pop("t", None)
+                    if kind in {"s", "inlineStr"}:
+                        text = strings[int(value.text)] if kind == "s" else "".join(cached.find(tag("is")).itertext())
+                        cell.set("t", "str")
+                        ET.SubElement(cell, tag("v")).text = text
+                    elif value is not None:
+                        if kind:
+                            cell.set("t", kind)
+                        cell.append(copy.deepcopy(value))
+                    elif kind == "str":
+                        cell.set("t", "str")
+                        ET.SubElement(cell, tag("v"))
+                    else:
+                        raise ExcelExportError(f"公式缺少缓存值：{name}!{address}")
+                if pending:
+                    raise ExcelExportError(f"公式缺少重算结果：{name}!{next(iter(pending))}")

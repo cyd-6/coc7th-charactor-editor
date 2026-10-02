@@ -62,24 +62,45 @@ def _coordinate(address: str) -> tuple[int, int]:
 
 
 def _xlsx_table(book: _Workbook, sheet: str) -> dict[tuple[int, int], _Cell]:
-    nodes = list(book.xml(book.paths[sheet]).iter(_tag("c")))
-    if len(nodes) > MAX_TABLE_CELLS:
-        raise ExcelImportError("简化表内容过多，请仅保留要导入的一名调查员属性。")
-    addresses = [cell.get("r") for cell in nodes]
-    if len(addresses) != len(set(addresses)):
-        raise ExcelImportError("表格包含重复的单元格地址，请重新另存为普通 XLSX。")
-    cells = book.cells(sheet)
+    parser = ET.XMLPullParser(events=("start", "end"), resolve_entities=False, no_network=True, huge_tree=False)
+    addresses = set()
+    count = 0
     table = {}
-    for address, cell in cells.items():
-        point = _coordinate(address or "")
-        item = _Cell(
-            book.value(address, sheet, report=False),
-            f"{sheet}!{address}",
-            cell.find(_tag("f")) is not None,
-            cell.get("t") == "e",
-        )
-        if item.present:
-            table[point] = item
+    tail = b""
+    with book.archive.open(book.paths[sheet]) as source:
+        while chunk := source.read(64 * 1024):
+            declaration = tail + chunk.upper()
+            if b"<!DOCTYPE" in declaration or b"<!ENTITY" in declaration:
+                raise ExcelImportError("表格包含不支持的 XML 声明，请重新另存为 XLSX。")
+            tail = declaration[-8:]
+            parser.feed(chunk)
+            for event, cell in parser.read_events():
+                if event == "start":
+                    if cell.tag == _tag("c"):
+                        count += 1
+                        if count > MAX_TABLE_CELLS:
+                            raise ExcelImportError("简化表内容过多，请仅保留要导入的一名调查员属性。")
+                    continue
+                if cell.tag == _tag("c"):
+                    address = cell.get("r")
+                    if address in addresses:
+                        raise ExcelImportError("表格包含重复的单元格地址，请重新另存为普通 XLSX。")
+                    addresses.add(address)
+                    point = _coordinate(address or "")
+                    item = _Cell(
+                        book.cell_value(cell, address, sheet, report=False),
+                        f"{sheet}!{address}",
+                        cell.find(_tag("f")) is not None,
+                        cell.get("t") == "e",
+                    )
+                    if item.present:
+                        table[point] = item
+                if cell.tag in {_tag("c"), _tag("row")}:
+                    cell.clear()
+                    parent = cell.getparent()
+                    if parent is not None:
+                        parent.remove(cell)
+        parser.close()
     return table
 
 
@@ -220,7 +241,11 @@ def import_attributes(data: bytes, filename: str) -> dict:
     try:
         if extension == ".xlsx":
             book = _Workbook(data, require_card=False)
-            results = [result for sheet in book.paths if (result := _parse_table(_xlsx_table(book, sheet), sheet)) is not None]
+            results = []
+            for sheet in book.paths:
+                result = _parse_table(_xlsx_table(book, sheet), sheet)
+                if result is not None:
+                    results.append(result)
         else:
             result = _parse_table(_text_table(data, extension), extension[1:].upper())
             results = [result] if result is not None else []

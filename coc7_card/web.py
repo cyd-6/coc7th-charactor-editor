@@ -14,9 +14,22 @@ from .models import (
     InvestigatorIdentity,
     OccupationDefinition,
     SkillAllocation,
+    SkillDefinition,
     Weapon,
 )
 from .rules import RuleEngine
+from .skill_specializations import (
+    GROUP_BASE_VALUES,
+    MAX_SKILL_BRANCHES,
+    canonical_specialization,
+    is_branch_slot,
+    matching_branch_slot,
+    skill_group,
+    skill_groups_metadata,
+    specialization_base_value,
+    specialization_metadata,
+    validate_branch_identity,
+)
 from .currency import currency_options, legacy_currency_code, parse_usd, format_amount, usd_reference, YEAR_START, YEAR_END
 
 
@@ -33,9 +46,11 @@ def catalog_payload(catalog: TemplateCatalog) -> dict[str, Any]:
             "sheet_count": len(catalog.sheet_names),
             "occupation_count": len(catalog.occupations),
             "skill_count": len(catalog.skills),
+            "max_skill_branches": MAX_SKILL_BRANCHES,
         },
         "occupations": [asdict(item) for item in catalog.occupations],
-        "skills": [asdict(item) for item in catalog.skills],
+        "skills": [{**asdict(item), **specialization_metadata(item)} for item in catalog.skills],
+        "skill_groups": skill_groups_metadata(),
         "weapons": [asdict(item) for item in catalog.weapons],
         "inventory": [asdict(item) for item in catalog.inventory],
         "experience_packages": list(catalog.experience_packages),
@@ -83,11 +98,32 @@ def build_draft(payload: dict[str, Any], catalog: TemplateCatalog) -> CharacterD
         _text(item) for item in _list(payload.get("free_skill_choices")) if _text(item)
     ]
 
-    skill_rows = {
-        _text(item.get("template_slot") or item.get("key")): item
-        for item in _list(payload.get("skills"))
-        if isinstance(item, dict) and _text(item.get("template_slot") or item.get("key"))
-    }
+    skill_rows: dict[str, dict[str, Any]] = {}
+    branch_definitions: list[SkillDefinition] = []
+    catalog_slots = {item.template_slot for item in catalog.skills}
+    for item in _list(payload.get("skills")):
+        if not isinstance(item, dict):
+            raise DraftPayloadError("技能记录格式无效，请检查技能列表。")
+        slot = _text(item.get("template_slot") or item.get("key"))
+        if slot in skill_rows:
+            raise DraftPayloadError("技能标识重复，请检查重复的技能记录。")
+        if slot not in catalog_slots:
+            if len(branch_definitions) >= MAX_SKILL_BRANCHES:
+                raise DraftPayloadError(f"新增技能分支不能超过 {MAX_SKILL_BRANCHES} 个，请减少分支后重试。")
+            try:
+                slot, name, specialization = validate_branch_identity(
+                    slot, item.get("name"), item.get("specialization"),
+                )
+            except ValueError as exc:
+                raise DraftPayloadError(str(exc)) from exc
+            if item.get("key") and _text(item["key"]) != slot:
+                raise DraftPayloadError("分支技能的标识不一致，请重新添加该分支技能。")
+            item = {**item, "name": name, "specialization": specialization}
+            branch_definitions.append(SkillDefinition(
+                key=slot, name=name, base_value=GROUP_BASE_VALUES[name], template_slot=slot,
+                specializable=True,
+            ))
+        skill_rows[slot] = item
     selected_slots = _selected_occupation_slots(
         occupation,
         catalog,
@@ -97,13 +133,18 @@ def build_draft(payload: dict[str, Any], catalog: TemplateCatalog) -> CharacterD
         skill_rows,
     )
     skills: list[SkillAllocation] = []
-    for definition in catalog.skills:
+    for definition in (*catalog.skills, *branch_definitions):
         row = skill_rows.get(definition.template_slot, {})
+        name = _text(row.get("name")) or definition.name
+        specialization = _text(row.get("specialization")) or definition.default_specialization
+        if definition.template_slot in selected_slots and selected_slots[definition.template_slot]:
+            specialization = specialization or selected_slots[definition.template_slot]
         base_default = RuleEngine.skill_base_value(
             definition.base_formula,
             attributes,
             definition.base_value,
         )
+        base_default = specialization_base_value(name, specialization, base_default)
         # A spreadsheet may carry an explicitly edited starting skill value.
         # Keep that input separate from growth/experience; ordinary drafts still
         # derive starting values from the catalog and current attributes.
@@ -114,14 +155,11 @@ def build_draft(payload: dict[str, Any], catalog: TemplateCatalog) -> CharacterD
             if not 0 <= base_override <= 999 or int(base_override) != base_override:
                 raise DraftPayloadError(f"{definition.name}的导入基础值必须为 0—999 的整数。")
             base_default = int(base_override)
-        specialization = _text(row.get("specialization")) or definition.default_specialization
-        if definition.template_slot in selected_slots and selected_slots[definition.template_slot]:
-            specialization = specialization or selected_slots[definition.template_slot]
         skills.append(
             SkillAllocation(
                 key=definition.template_slot,
                 template_slot=definition.template_slot,
-                name=_text(row.get("name")) or definition.name,
+                name=name,
                 specialization=specialization,
                 base_value=base_default,
                 occupation_points=_integer(row.get("occupation_points"), 0),
@@ -131,6 +169,17 @@ def build_draft(payload: dict[str, Any], catalog: TemplateCatalog) -> CharacterD
                 selected_occupation=definition.template_slot in selected_slots,
             )
         )
+
+    seen_specializations: dict[tuple[str, str], bool] = {}
+    for skill in skills:
+        group = skill_group(skill.name)
+        if not group or not skill.specialization:
+            continue
+        identity = (group, canonical_specialization(group, skill.specialization))
+        branch = is_branch_slot(skill.template_slot)
+        if identity in seen_specializations and (branch or seen_specializations[identity]):
+            raise DraftPayloadError(f"{group}（{skill.specialization}）已存在，请使用不同的分支名称。")
+        seen_specializations[identity] = branch
 
     credit_rating = next(
         (skill.final_value for skill in skills if skill.name.rstrip("：:").strip() == "信用评级"),
@@ -268,15 +317,21 @@ def _selected_occupation_slots(
     selected: dict[str, str] = {"F26": ""}
     if occupation is None:
         return selected
+    valid_slots = {item.template_slot for item in catalog.skills}
+    valid_slots.update(slot for slot in raw_skill_rows if is_branch_slot(slot))
     if occupation.is_custom:
-        slots = [slot for slot in custom_skill_slots if catalog.skill_cell(slot)]
+        if any(slot not in valid_slots for slot in custom_skill_slots):
+            raise DraftPayloadError("自定义职业选择了不存在的技能，请重新选择。")
+        slots = list(dict.fromkeys(custom_skill_slots))
         if not slots:
             slots = [
                 slot
                 for slot, row in raw_skill_rows.items()
-                if bool(row.get("selected_occupation")) and catalog.skill_cell(slot)
+                if bool(row.get("selected_occupation")) and slot in valid_slots
             ]
-        selected.update({slot: "" for slot in slots[:8]})
+        if len([slot for slot in slots if slot != "F26"]) > 8:
+            raise DraftPayloadError("自定义职业最多选择 8 项职业技能，每个分支技能分别占一项。")
+        selected.update({slot: "" for slot in slots})
         return selected
 
     tokens = list(occupation.fixed_skills)
@@ -287,12 +342,17 @@ def _selected_occupation_slots(
         definitions_by_name.setdefault(normalize_skill_name(definition.name), []).append(definition)
     for token in tokens:
         base_name, specialization = split_occupation_skill_token(token)
+        branch_slot = matching_branch_slot(base_name, specialization, raw_skill_rows.values())
+        if branch_slot:
+            selected[branch_slot] = specialization
+            continue
         matches = definitions_by_name.get(base_name, [])
         if matches:
             selected[matches[0].template_slot] = specialization
     for slot in free_skill_choices:
-        if catalog.skill_cell(slot):
-            selected[slot] = ""
+        if slot not in valid_slots:
+            raise DraftPayloadError("任意特长选择了不存在的技能，请重新选择。")
+        selected[slot] = ""
     return selected
 
 

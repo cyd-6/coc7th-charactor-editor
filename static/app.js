@@ -53,6 +53,8 @@ let pendingImport = null;
 let lastImportSnapshot = null;
 let pendingAttributeImport = null;
 let lastAttributeImportSnapshot = null;
+const skillGroupExpansion = new Map();
+let pendingBranchRemoval = null;
 
 document.addEventListener("DOMContentLoaded", initialize);
 
@@ -246,12 +248,14 @@ function createDefaultState() {
 }
 
 function makeSkillState(definition, attributes) {
+  const specialization = definition.default_specialization || definition.preset_specialization || "";
   return {
     key: definition.template_slot,
     template_slot: definition.template_slot,
     name: definition.name,
-    specialization: definition.default_specialization || "",
-    base_value: dynamicBase(definition, attributes),
+    specialization,
+    auto_specialization: true,
+    base_value: specializedBase(definition, attributes, specialization),
     occupation_points: 0,
     interest_points: 0,
     extra_final: 0,
@@ -297,14 +301,25 @@ function normalizeState() {
   if (!bootstrapData.occupations.some((item) => item.occupation_id === Number(state.occupation_id))) {
     state.occupation_id = bootstrapData.occupations[0]?.occupation_id || 2;
   }
-  const oldBySlot = new Map((Array.isArray(state.skills) ? state.skills : []).map((item) => [item.template_slot, item]));
+  const savedSkills = Array.isArray(state.skills) ? state.skills : [];
+  const oldBySlot = new Map(savedSkills.map((item) => [item.template_slot, item]));
   state.skills = bootstrapData.skills.map((definition) => ({
     ...makeSkillState(definition, state.attributes),
     ...(oldBySlot.get(definition.template_slot) || {}),
     key: definition.template_slot,
     template_slot: definition.template_slot,
     name: oldBySlot.get(definition.template_slot)?.name || definition.name,
+    auto_specialization: oldBySlot.has(definition.template_slot) ? oldBySlot.get(definition.template_slot).auto_specialization === true : true,
   }));
+  const branchIds = new Set();
+  savedSkills.filter((skill) => String(skill.template_slot || "").startsWith("branch-")).forEach((skill) => {
+    if (!isBranchSlot(skill.template_slot) || branchIds.has(skill.template_slot) || !skillGroups().some((item) => item.group === skill.name)) {
+      throw new Error("草稿中的分支技能标识或大项无效，原草稿已保留，请核对导入文件。");
+    }
+    branchIds.add(skill.template_slot);
+    state.skills.push({ occupation_points: 0, interest_points: 0, extra_final: 0, experience_points: 0,
+      selected_occupation: false, ...skill, key: skill.template_slot, auto_specialization: false });
+  });
   state.current_step = clampNumber(state.current_step, 0, 6, 0);
 }
 
@@ -363,8 +378,31 @@ function bindStaticControls() {
 
   document.getElementById("skill-search").addEventListener("input", renderSkills);
   document.getElementById("skill-filter").addEventListener("change", renderSkills);
+  document.getElementById("add-skill-branch").addEventListener("click", () => openSkillBranchDialog());
+  document.getElementById("skill-branch-group").addEventListener("change", updateBranchChoices);
+  document.getElementById("skill-branch-name").addEventListener("input", updateBranchBase);
+  document.getElementById("skill-branch-form").addEventListener("submit", addSkillBranch);
+  document.getElementById("skill-branch-cancel").addEventListener("click", () => document.getElementById("skill-branch-dialog").close());
+  document.getElementById("skill-branch-remove-cancel").addEventListener("click", () => document.getElementById("skill-branch-remove-dialog").close());
+  document.getElementById("skill-branch-remove-confirm").addEventListener("click", removeSkillBranch);
   document.getElementById("skill-table-body").addEventListener("input", handleSkillInput);
+  document.getElementById("skill-table-body").addEventListener("change", handleSpecializationChange);
   document.getElementById("skill-table-body").addEventListener("click", (event) => {
+    const addBranch = event.target.closest("[data-add-skill-branch]");
+    if (addBranch) { openSkillBranchDialog(addBranch.dataset.addSkillBranch); return; }
+    const removeBranch = event.target.closest("[data-remove-skill-branch]");
+    if (removeBranch) { confirmRemoveSkillBranch(removeBranch.dataset.removeSkillBranch); return; }
+    const toggle = event.target.closest("[data-skill-group-toggle]");
+    if (toggle) {
+      const expanded = toggle.getAttribute("aria-expanded") !== "true";
+      skillGroupExpansion.set(skillGroupExpansionKey(toggle.dataset.skillGroupToggle), expanded);
+      toggle.setAttribute("aria-expanded", String(expanded));
+      toggle.querySelector(".skill-group-action").textContent = expanded ? "收起" : "展开";
+      document.querySelectorAll("[data-skill-group]").forEach((row) => {
+        if (row.dataset.skillGroup === toggle.dataset.skillGroupToggle) row.hidden = !expanded;
+      });
+      return;
+    }
     const button = event.target.closest("[data-clear-occupation]");
     if (!button) return;
     const skill = skillBySlot(button.dataset.clearOccupation);
@@ -471,7 +509,7 @@ function hydrateControls() {
 
 function renderCatalogMeta() {
   const meta = bootstrapData.meta;
-  document.getElementById("catalog-meta").textContent = `${meta.occupation_count} 个职业 · ${meta.skill_count} 个技能`;
+  document.getElementById("catalog-meta").textContent = `${meta.occupation_count} 个职业 · ${state.skills.length} 个技能`;
 }
 
 function goToStep(step, persist = true) {
@@ -595,14 +633,14 @@ function renderFreeChoices() {
   const card = document.getElementById("free-choice-card");
   if (!occupation || state.occupation_mode !== "catalog" || occupation.free_choices === 0) { card.hidden = true; state.free_skill_choices = []; return; }
   card.hidden = false;
-  state.free_skill_choices = state.free_skill_choices.filter((slot) => bootstrapData.skills.some((item) => item.template_slot === slot)).slice(0, occupation.free_choices);
+  state.free_skill_choices = state.free_skill_choices.filter((slot) => state.skills.some((item) => item.template_slot === slot)).slice(0, occupation.free_choices);
   document.getElementById("free-choice-caption").textContent = "";
   document.getElementById("free-choice-counter").textContent = `${state.free_skill_choices.length} / ${occupation.free_choices}`;
   const query = normalizeText(document.getElementById("free-choice-search").value);
   const grid = document.getElementById("free-choice-grid");
   grid.innerHTML = "";
-  bootstrapData.skills.filter((skill) => !query || normalizeText(`${skill.name} ${skill.default_specialization}`).includes(query)).forEach((skill) => {
-    const labelText = skill.default_specialization ? `${skill.name}（${skill.default_specialization}）` : skill.name;
+  state.skills.filter((skill) => !query || normalizeText(skillLabel(skill)).includes(query)).forEach((skill) => {
+    const labelText = skillLabel(skill);
     const label = createCheckChip(labelText, state.free_skill_choices.includes(skill.template_slot));
     const input = label.querySelector("input");
     input.addEventListener("change", () => {
@@ -618,13 +656,13 @@ function renderFreeChoices() {
 }
 
 function renderCustomSkillChoices() {
-  state.custom_skill_slots = state.custom_skill_slots.filter((slot) => bootstrapData.skills.some((item) => item.template_slot === slot)).slice(0, 8);
+  state.custom_skill_slots = state.custom_skill_slots.filter((slot) => state.skills.some((item) => item.template_slot === slot)).slice(0, 8);
   document.getElementById("custom-skill-counter").textContent = `${state.custom_skill_slots.length} / 8`;
   const query = normalizeText(document.getElementById("custom-skill-search").value);
   const grid = document.getElementById("custom-skill-grid");
   grid.innerHTML = "";
-  bootstrapData.skills.filter((skill) => !query || normalizeText(`${skill.name} ${skill.default_specialization}`).includes(query)).forEach((skill) => {
-    const labelText = skill.default_specialization ? `${skill.name}（${skill.default_specialization}）` : skill.name;
+  state.skills.filter((skill) => !query || normalizeText(skillLabel(skill)).includes(query)).forEach((skill) => {
+    const labelText = skillLabel(skill);
     const label = createCheckChip(labelText, state.custom_skill_slots.includes(skill.template_slot));
     const input = label.querySelector("input");
     input.addEventListener("change", () => {
@@ -663,6 +701,10 @@ function selectedOccupationSlots() {
   occupation.choice_groups.forEach((group) => tokens.push(...(state.group_choices[group.marker] || [])));
   tokens.forEach((token) => {
     const [name, specialization] = splitSkillToken(token);
+    const group = skillGroups().find((item) => item.group === name.replace(/[：:①②③]+$/, "").trim());
+    const branch = specialization && !["任一", "任意", "任选", "自选"].includes(specialization) && group && state.skills.find((skill) => isBranchSlot(skill.template_slot)
+      && skill.name === group.group && canonicalBranchName(group, skill.specialization) === canonicalBranchName(group, specialization));
+    if (branch) { selected.set(branch.template_slot, specialization); return; }
     const definition = bootstrapData.skills.find((item) => normalizeSkillName(item.name) === name);
     if (definition) selected.set(definition.template_slot, specialization);
   });
@@ -672,21 +714,67 @@ function selectedOccupationSlots() {
 
 function syncOccupationSkills() {
   const selected = selectedOccupationSlots();
+  const definitions = new Map(state.skills.map((item) => [item.template_slot, skillDefinition(item)]));
+  const untouched = state.skills.filter((skill) => skill.auto_specialization && skill.base_override == null
+    && ![skill.occupation_points, skill.interest_points, skill.extra_final, skill.experience_points].some((value) => numeric(value)));
+  const presets = new Map(untouched.map((skill) => {
+    const definition = definitions.get(skill.template_slot);
+    return [skill.template_slot, definition.default_specialization || definition.preset_specialization || ""];
+  }));
+  // When a profession needs a preset in another slot, swap only untouched
+  // defaults so, for example, bow and rifle remain separate available choices.
+  untouched.forEach((skill) => {
+    const required = selected.get(skill.template_slot);
+    if (!required) return;
+    const definition = definitions.get(skill.template_slot);
+    const canonical = specializationOption(definition, required)?.name || required;
+    const sibling = untouched.find((item) => item.template_slot !== skill.template_slot
+      && skillGroupName(item) === skillGroupName(skill) && !selected.get(item.template_slot)
+      && (specializationOption(definition, presets.get(item.template_slot))?.name || presets.get(item.template_slot)) === canonical);
+    if (sibling) presets.set(sibling.template_slot, presets.get(skill.template_slot));
+    presets.set(skill.template_slot, required);
+  });
+  const presetKey = (skill, name) => JSON.stringify([skillGroupName(skill), specializationOption(definitions.get(skill.template_slot), name)?.name || name]);
+  const used = new Set(state.skills.filter((skill) => !presets.has(skill.template_slot) || selected.get(skill.template_slot))
+    .filter((skill) => skillGroupName(skill))
+    .map((skill) => presetKey(skill, presets.get(skill.template_slot) || skill.specialization)));
+  untouched.forEach((skill) => {
+    const group = skillGroupName(skill);
+    const desired = presets.get(skill.template_slot);
+    if (!group || !desired || selected.get(skill.template_slot)) return;
+    if (used.has(presetKey(skill, desired))) {
+      const alternatives = [skill.specialization,
+        ...bootstrapData.skills.filter((item) => item.group === group).map((item) => item.default_specialization || item.preset_specialization),
+        ...(definitions.get(skill.template_slot).specialization_options || []).map((item) => item.name)];
+      presets.set(skill.template_slot, alternatives.find((name) => name && !used.has(presetKey(skill, name))) || "");
+    }
+    if (presets.get(skill.template_slot)) used.add(presetKey(skill, presets.get(skill.template_slot)));
+  });
+  let namesChanged = false;
   state.skills.forEach((skill) => {
     skill.selected_occupation = selected.has(skill.template_slot);
+    const previousName = skillDisplayName(skill);
     const specialization = selected.get(skill.template_slot);
-    if (skill.selected_occupation && specialization && !String(skill.specialization || "").trim()) skill.specialization = specialization;
+    if (presets.has(skill.template_slot)) skill.specialization = presets.get(skill.template_slot);
+    else if (skill.selected_occupation && specialization && !String(skill.specialization || "").trim()) skill.specialization = specialization;
+    if (skillDisplayName(skill) !== previousName) {
+      namesChanged = true;
+      state.weapons.forEach((weapon) => {
+        if (weapon.skill === previousName) weapon.skill = skillDisplayName(skill);
+      });
+    }
   });
+  syncDynamicSkillBases();
+  if (namesChanged) { renderFreeChoices(); renderCustomSkillChoices(); }
   renderLiveSummary();
 }
 
 function syncDynamicSkillBases() {
-  const definitions = new Map(bootstrapData.skills.map((item) => [item.template_slot, item]));
   state.skills.forEach((skill) => {
-    const definition = definitions.get(skill.template_slot);
+    const definition = skillDefinition(skill);
     if (definition) skill.base_value = Number.isInteger(skill.base_override) && skill.base_override >= 0
       ? skill.base_override
-      : dynamicBase(definition, state.attributes);
+      : skillGroupName(skill) ? specializedBase(definition, state.attributes, skill.specialization) : dynamicBase(definition, state.attributes);
   });
 }
 
@@ -697,17 +785,161 @@ function dynamicBase(definition, attributes) {
   return numeric(definition.base_value, 0);
 }
 
+function specializationOption(definition, specialization) {
+  const name = normalizeText(String(specialization || "").normalize("NFKC"));
+  return (definition.specialization_options || []).find((item) => [item.name, ...(item.aliases || [])]
+    .some((candidate) => normalizeText(candidate.normalize("NFKC")) === name));
+}
+
+function specializedBase(definition, attributes, specialization) {
+  const option = specializationOption(definition, specialization);
+  return option ? option.base_value : dynamicBase(definition, attributes);
+}
+
+function skillGroupName(skill) {
+  const definition = skillDefinition(skill);
+  const clean = skill.name.replace(/[：:①②③]+$/, "").trim();
+  return definition?.group === clean ? clean : "";
+}
+
+function isBranchSlot(slot) { return /^branch-[0-9a-f]{32}$/.test(String(slot || "")); }
+
+function skillGroups() {
+  return bootstrapData.skill_groups || [...new Map(bootstrapData.skills.filter((item) => item.group).map((item) => [item.group, item])).values()];
+}
+
+function skillDefinition(skill) {
+  if (!isBranchSlot(skill.template_slot)) return bootstrapData.skills.find((item) => item.template_slot === skill.template_slot);
+  const group = skillGroups().find((item) => item.group === skill.name);
+  return group ? { ...group, name: group.group, template_slot: skill.template_slot, default_specialization: "", preset_specialization: "", specializable: true, base_formula: null } : null;
+}
+
+function canonicalBranchName(definition, name) {
+  const normalized = String(name || "").normalize("NFKC").trim();
+  const option = (definition.specialization_options || []).find((item) => [item.name, ...(item.aliases || [])].some((value) => normalizeText(value.normalize("NFKC")) === normalizeText(normalized)));
+  return normalizeText(option?.name || normalized);
+}
+
+function branchNameExists(group, name, excludedSlot = "", addedBranch = true) {
+  const definition = skillGroups().find((item) => item.group === group);
+  if (!definition) return false;
+  const canonical = canonicalBranchName(definition, name);
+  return Boolean(canonical) && state.skills.some((skill) => skill.template_slot !== excludedSlot && skillGroupName(skill) === group
+    && (addedBranch || isBranchSlot(skill.template_slot)) && canonicalBranchName(definition, skill.specialization) === canonical);
+}
+
+function openSkillBranchDialog(group = "") {
+  const select = document.getElementById("skill-branch-group");
+  select.innerHTML = skillGroups().map((item) => `<option value="${escapeAttr(item.group)}">${escapeHtml(item.group)}</option>`).join("");
+  if (group) select.value = group;
+  updateBranchChoices();
+  document.getElementById("skill-branch-dialog").showModal();
+  document.getElementById("skill-branch-name").focus();
+}
+
+function updateBranchChoices() {
+  const group = document.getElementById("skill-branch-group").value;
+  const definition = skillGroups().find((item) => item.group === group);
+  const options = (definition?.specialization_options || []).filter((item) => !branchNameExists(group, item.name));
+  document.getElementById("skill-branch-options").innerHTML = options.map((item) => `<option value="${escapeAttr(item.name)}"></option>`).join("");
+  document.getElementById("skill-branch-name").value = options[0]?.name || "";
+  updateBranchBase();
+}
+
+function updateBranchBase() {
+  const input = document.getElementById("skill-branch-name");
+  input.setCustomValidity("");
+  const definition = skillGroups().find((item) => item.group === document.getElementById("skill-branch-group").value);
+  setText("skill-branch-base", definition ? specializedBase(definition, state.attributes, input.value) : "—");
+}
+
+function addSkillBranch(event) {
+  event.preventDefault();
+  if (state.skills.filter((skill) => isBranchSlot(skill.template_slot)).length >= bootstrapData.meta.max_skill_branches) {
+    toast(`新增技能分支不能超过 ${bootstrapData.meta.max_skill_branches} 个，请减少分支后重试。`, true);
+    return;
+  }
+  const group = document.getElementById("skill-branch-group").value;
+  const input = document.getElementById("skill-branch-name");
+  const specialization = input.value.trim();
+  if (!specialization || [...specialization].length > 80 || branchNameExists(group, specialization)) {
+    input.setCustomValidity(!specialization ? "请填写分支名称。" : [...specialization].length > 80 ? "分支名称不能超过 80 个字。" : "这个分支已存在，请直接为已有分支加点。");
+    input.reportValidity(); return;
+  }
+  const definition = skillGroups().find((item) => item.group === group);
+  if (!definition) return;
+  const slot = `branch-${crypto.randomUUID().replaceAll("-", "")}`;
+  state.skills.push({ key: slot, template_slot: slot, name: group, specialization,
+    auto_specialization: false, base_value: specializedBase(definition, state.attributes, specialization),
+    occupation_points: 0, interest_points: 0, extra_final: 0, experience_points: 0, selected_occupation: false });
+  document.getElementById("skill-branch-dialog").close();
+  document.getElementById("skill-search").value = "";
+  document.getElementById("skill-filter").value = "all";
+  skillGroupExpansion.set(skillGroupExpansionKey(group), true);
+  refreshBranchViews();
+  document.getElementById(`skill-row-${slot}`)?.scrollIntoView({ block: "nearest" });
+}
+
+function confirmRemoveSkillBranch(slot) {
+  const skill = skillBySlot(slot);
+  if (!skill || !isBranchSlot(slot)) return;
+  pendingBranchRemoval = slot;
+  setText("skill-branch-remove-note", `删除“${skillLabel(skill)}”及其加点，已用点数会退回。引用它的武器需重新选择技能。`);
+  document.getElementById("skill-branch-remove-dialog").showModal();
+}
+
+function removeSkillBranch() {
+  const skill = skillBySlot(pendingBranchRemoval);
+  if (!skill || !isBranchSlot(skill.template_slot)) return;
+  const name = skillDisplayName(skill);
+  state.skills = state.skills.filter((item) => item.template_slot !== skill.template_slot);
+  state.custom_skill_slots = state.custom_skill_slots.filter((slot) => slot !== skill.template_slot);
+  state.free_skill_choices = state.free_skill_choices.filter((slot) => slot !== skill.template_slot);
+  state.weapons.forEach((weapon) => { if (weapon.skill === name) weapon.skill = ""; });
+  pendingBranchRemoval = null;
+  document.getElementById("skill-branch-remove-dialog").close();
+  refreshBranchViews();
+}
+
+function refreshBranchViews() {
+  syncOccupationSkills();
+  renderSkills(); renderFreeChoices(); renderCustomSkillChoices(); renderEquipment(); renderCatalogMeta(); renderLiveSummary();
+  markChanged();
+}
+
+function skillLabel(skill) {
+  const group = skillGroupName(skill);
+  return group && String(skill.specialization || "").trim() ? `${group}（${skill.specialization.trim()}）` : skillDisplayName(skill);
+}
+
+function skillGroupExpansionKey(group) {
+  return JSON.stringify([document.getElementById("skill-filter").value, normalizeText(document.getElementById("skill-search").value), group]);
+}
+
 function renderSkills() {
   const body = document.getElementById("skill-table-body");
   const query = normalizeText(document.getElementById("skill-search").value);
   const filter = document.getElementById("skill-filter").value;
   const visible = state.skills.filter((skill) => {
-    const matchesQuery = !query || normalizeText(`${skill.name} ${skill.specialization}`).includes(query);
+    const matchesQuery = !query || normalizeText(`${skill.name} ${skill.specialization} ${skillLabel(skill)}`).includes(query);
     const allocated = numeric(skill.occupation_points) + numeric(skill.interest_points) + numeric(skill.extra_final) + numeric(skill.experience_points) > 0;
-    const matchesFilter = filter === "all" || (filter === "occupation" && skill.selected_occupation) || (filter === "allocated" && allocated) || (filter === "specialized" && (skill.specialization || skill.name.endsWith("：") || skill.name.endsWith(":")));
+    const matchesFilter = filter === "all" || (filter === "occupation" && skill.selected_occupation) || (filter === "allocated" && allocated) || (filter === "specialized" && (skillGroupName(skill) || skill.specialization));
     return matchesQuery && matchesFilter;
   });
-  body.innerHTML = visible.map((skill) => skillRowHtml(skill)).join("");
+  const sections = new Map();
+  visible.forEach((skill) => {
+    const group = skillGroupName(skill);
+    const key = group || skill.template_slot;
+    if (!sections.has(key)) sections.set(key, { group, skills: [] });
+    sections.get(key).skills.push(skill);
+  });
+  body.innerHTML = [...sections.values()].map(({ group, skills }) => {
+    if (!group) return skills.map((skill) => skillRowHtml(skill)).join("");
+    const expanded = skillGroupExpansion.get(skillGroupExpansionKey(group)) ?? Boolean(query || filter !== "all");
+    const rowIds = skills.map((skill) => `skill-row-${skill.template_slot}`).join(" ");
+    const heading = `<tr class="skill-group-heading"><td colspan="10"><div class="skill-group-bar"><button type="button" class="skill-group-toggle" data-skill-group-toggle="${escapeAttr(group)}" aria-expanded="${expanded}" aria-controls="${escapeAttr(rowIds)}"><span class="skill-group-arrow" aria-hidden="true">›</span><strong>${escapeHtml(group)}</strong><span class="skill-group-count">${skills.length} 个分支</span><span class="skill-group-action">${expanded ? "收起" : "展开"}</span></button><button type="button" class="skill-branch-add" data-add-skill-branch="${escapeAttr(group)}" aria-label="添加${escapeAttr(group)}分支">＋ 添加分支</button></div></td></tr>`;
+    return heading + skills.map((skill) => skillRowHtml(skill, group, !expanded)).join("");
+  }).join("");
   document.getElementById("skill-empty").hidden = visible.length > 0;
   renderBudgets();
 }
@@ -735,14 +967,18 @@ function experienceBudget() {
   return state.experience.selection === "custom" ? numeric(state.experience.skill_points) : (bootstrapData.experience_packages || []).find((item) => item.name === state.experience.selection)?.skill_points || 0;
 }
 
-function skillRowHtml(skill) {
+function skillRowHtml(skill, group = "", hidden = false) {
   const finalValue = skillFinal(skill);
-  const isSpecialized = Boolean(String(skill.specialization || "").trim()) || /[：:]$/.test(skill.name);
   const warning = finalValue > 99 || (skill.name.includes("克苏鲁神话") && (numeric(skill.occupation_points) || numeric(skill.interest_points)));
-  const badges = `${skill.selected_occupation ? '<span class="skill-badge occupation">★</span>' : '<span class="skill-badge">—</span>'}${isSpecialized ? '<span class="skill-badge specialized">专</span>' : ""}`;
-  return `<tr data-skill-row="${escapeAttr(skill.template_slot)}" class="${warning ? "warning" : ""}">
+  const badges = skill.selected_occupation ? '<span class="skill-badge occupation" title="本职技能">★</span>' : '<span class="skill-badge">—</span>';
+  const definition = skillDefinition(skill);
+  const editable = definition?.specializable || skill.specialization;
+  const label = skillGroupName(skill) || skill.name.replace(/[：:]$/, "").trim();
+  const options = (definition?.specialization_options || []).map((item) => `<option value="${escapeAttr(item.name)}"></option>`).join("");
+  const name = editable ? `<label class="skill-specialization"><span>${escapeHtml(label)}（</span><input type="text" class="specialization-input" data-specialization-slot="${escapeAttr(skill.template_slot)}" value="${escapeAttr(skill.specialization)}" list="skill-options-${escapeAttr(skill.template_slot)}" placeholder="填写分项" aria-label="${escapeAttr(skill.name)}分项名称"><span>）</span></label><datalist id="skill-options-${escapeAttr(skill.template_slot)}">${options}</datalist>` : escapeHtml(skillLabel(skill));
+  return `<tr id="skill-row-${escapeAttr(skill.template_slot)}" data-skill-row="${escapeAttr(skill.template_slot)}" ${group ? `data-skill-group="${escapeAttr(group)}"` : ""} class="skill-row${group ? " skill-subrow" : ""}${warning ? " warning" : ""}" ${hidden ? "hidden" : ""}>
     <td>${badges}</td>
-    <td class="skill-name">${escapeHtml(skill.name.replace(/[：:]$/, ""))}${skill.specialization ? `（${escapeHtml(skill.specialization)}）` : ""}</td>
+    <td class="skill-name">${name}${isBranchSlot(skill.template_slot) ? `<button type="button" class="skill-branch-remove" data-remove-skill-branch="${escapeAttr(skill.template_slot)}" aria-label="删除${escapeAttr(skillLabel(skill))}">删除分支</button>` : ""}</td>
     <td class="readonly-value" data-result="base">${numeric(skill.base_value)}</td>
     <td><input type="number" min="0" max="500" data-skill-slot="${escapeAttr(skill.template_slot)}" data-skill-field="occupation_points" value="${numeric(skill.occupation_points)}" aria-label="${escapeAttr(skill.name)}职业点" ${skill.selected_occupation ? "" : 'disabled title="职业点仅可用于职业技能"'}>${!skill.selected_occupation && numeric(skill.occupation_points) ? `<button type="button" data-clear-occupation="${escapeAttr(skill.template_slot)}">退回职业点</button>` : ""}</td>
     <td><input type="number" min="0" max="500" data-skill-slot="${escapeAttr(skill.template_slot)}" data-skill-field="interest_points" value="${numeric(skill.interest_points)}" aria-label="${escapeAttr(skill.name)}兴趣点"></td>
@@ -750,6 +986,42 @@ function skillRowHtml(skill) {
     <td><input type="number" min="0" max="500" data-skill-slot="${escapeAttr(skill.template_slot)}" data-skill-field="extra_final" value="${numeric(skill.extra_final)}" aria-label="${escapeAttr(skill.name)}成长点数"></td>
     <td class="readonly-value" data-result="final">${finalValue}</td><td class="readonly-value" data-result="hard">${Math.floor(finalValue / 2)}</td><td class="readonly-value" data-result="extreme">${Math.floor(finalValue / 5)}</td>
   </tr>`;
+}
+
+function handleSpecializationChange(event) {
+  const input = event.target.closest("[data-specialization-slot]");
+  if (!input) return;
+  const skill = skillBySlot(input.dataset.specializationSlot);
+  const definition = skill ? skillDefinition(skill) : null;
+  if (!skill || !definition) return;
+  const previousName = skillDisplayName(skill);
+  const specialization = input.value.trim() || definition.default_specialization || "";
+  const branch = isBranchSlot(skill.template_slot);
+  if ((branch && (!specialization || [...specialization].length > 80)) || branchNameExists(skillGroupName(skill), specialization, skill.template_slot, branch)) {
+    input.value = skill.specialization;
+    toast(!specialization ? "分支名称不能为空。" : [...specialization].length > 80 ? "分支名称不能超过 80 个字。" : "这个分支已存在，请使用不同名称。", true);
+    return;
+  }
+  skill.specialization = specialization;
+  skill.auto_specialization = false;
+  input.value = skill.specialization;
+  state.weapons.forEach((weapon) => {
+    if (weapon.skill === previousName) weapon.skill = skillDisplayName(skill);
+  });
+  syncDynamicSkillBases();
+  const row = input.closest("tr");
+  row.querySelector('[data-result="base"]').textContent = skill.base_value;
+  updateSkillRowResults(row, skill);
+  renderFreeChoices(); renderCustomSkillChoices(); renderEquipment();
+  markChanged();
+}
+
+function updateSkillRowResults(row, skill) {
+  const finalValue = skillFinal(skill);
+  row.querySelector('[data-result="final"]').textContent = finalValue;
+  row.querySelector('[data-result="hard"]').textContent = Math.floor(finalValue / 2);
+  row.querySelector('[data-result="extreme"]').textContent = Math.floor(finalValue / 5);
+  row.classList.toggle("warning", finalValue > 99 || (skill.name.includes("克苏鲁神话") && (numeric(skill.occupation_points) || numeric(skill.interest_points))));
 }
 
 function handleSkillInput(event) {
@@ -762,11 +1034,7 @@ function handleSkillInput(event) {
   if (field === "occupation_points" && !skill.selected_occupation) return;
   skill[field] = Math.max(0, numeric(input.value, 0));
   const row = input.closest("tr");
-  const finalValue = skillFinal(skill);
-  row.querySelector('[data-result="final"]').textContent = finalValue;
-  row.querySelector('[data-result="hard"]').textContent = Math.floor(finalValue / 2);
-  row.querySelector('[data-result="extreme"]').textContent = Math.floor(finalValue / 5);
-  row.classList.toggle("warning", finalValue > 99 || (skill.name.includes("克苏鲁神话") && (numeric(skill.occupation_points) || numeric(skill.interest_points))));
+  updateSkillRowResults(row, skill);
   renderBudgets();
   renderAssetReference();
   markChanged();
@@ -988,9 +1256,9 @@ function weaponChoiceHtml(item, index) {
 }
 
 function weaponSkillOptions(current) {
-  const options = state.skills.map((skill) => ({ name: skillDisplayName(skill), value: skillFinal(skill) }));
+  const options = state.skills.map((skill) => ({ name: skillDisplayName(skill), label: skillLabel(skill), value: skillFinal(skill) }));
   if (current && !options.some((skill) => skill.name === current)) options.push({ name: current, value: null });
-  return '<option value="">选择技能</option>' + options.map((skill) => `<option value="${escapeAttr(skill.name)}" ${skill.name === current ? "selected" : ""}>${escapeHtml(skill.name)}${skill.value === null ? "" : ` · ${skill.value}`}</option>`).join("");
+  return '<option value="">选择技能</option>' + options.map((skill) => `<option value="${escapeAttr(skill.name)}" ${skill.name === current ? "selected" : ""}>${escapeHtml(skill.label || skill.name)}${skill.value === null ? "" : ` · ${skill.value}`}</option>`).join("");
 }
 
 function resolveWeaponSkill(sourceSkill) {
@@ -1114,8 +1382,17 @@ function handleIssueNavigation(event) {
   const button = event.target.closest("[data-issue-field]"); if (!button) return;
   const field = button.dataset.issueField;
   let step = 6;
-  if (field.startsWith("identity")) step = 0; else if (field.startsWith("attributes")) step = 1; else if (field.startsWith("occupation") || field.startsWith("group_choices") || field === "free_skill_choices") step = 2; else if (field === "skills" || /^F|^AB/.test(field)) step = 3; else if (field.startsWith("background") || field.startsWith("assets")) step = 4; else if (field.startsWith("weapons") || field.startsWith("inventory")) step = 5;
+  if (field.startsWith("identity")) step = 0; else if (field.startsWith("attributes")) step = 1; else if (field.startsWith("occupation") || field.startsWith("group_choices") || field === "free_skill_choices") step = 2; else if (field === "skills" || /^F|^AB/.test(field) || isBranchSlot(field)) step = 3; else if (field.startsWith("background") || field.startsWith("assets")) step = 4; else if (field.startsWith("weapons") || field.startsWith("inventory")) step = 5;
   goToStep(step);
+  if (step === 3 && skillBySlot(field)) {
+    document.getElementById("skill-search").value = "";
+    document.getElementById("skill-filter").value = "all";
+    skillGroupExpansion.set(skillGroupExpansionKey(skillGroupName(skillBySlot(field))), true);
+    renderSkills();
+    const row = document.getElementById(`skill-row-${field}`);
+    row?.scrollIntoView({ block: "center" });
+    row?.querySelector('input:not(:disabled)')?.focus({ preventScroll: true });
+  }
 }
 
 async function exportPdf() {
@@ -1408,6 +1685,10 @@ async function undoExcelImport() {
 
 function replaceInvestigator(draft, portrait, startAtIdentity = false) {
   clearAttributeImport();
+  skillGroupExpansion.clear();
+  document.getElementById("skill-branch-dialog").close();
+  document.getElementById("skill-branch-remove-dialog").close();
+  pendingBranchRemoval = null;
   draftGeneration += 1;
   clearTimeout(saveTimer);
   clearTimeout(derivedTimer);
@@ -1426,6 +1707,7 @@ function replaceInvestigator(draft, portrait, startAtIdentity = false) {
   renderAssetReference();
   renderDerived();
   renderLiveSummary();
+  renderCatalogMeta();
   setPortrait(portrait);
   document.getElementById("portrait-input").value = "";
   goToStep(state.current_step, false);

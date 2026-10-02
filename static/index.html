@@ -79,7 +79,7 @@
             <div class="portrait-panel">
               <label class="portrait-drop" for="portrait-input" id="portrait-drop">
                 <img id="portrait-preview" alt="调查员头像预览" hidden>
-                <span class="portrait-placeholder" id="portrait-placeholder"><b>＋</b><strong>添加头像</strong><small>图片 ≤ 8 MB</small></span>
+                <span class="portrait-placeholder" id="portrait-placeholder"><b>＋</b><strong>添加头像</strong><small>≤ 8 MB · 2000 万像素<br>导出长边 ≤ 1600px</small></span>
               </label>
               <input id="portrait-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
               <button type="button" class="text-button" id="portrait-remove" hidden>移除头像</button>
@@ -233,10 +233,12 @@
           </div>
 
           <div class="skill-toolbar paper-card">
-            <label class="search-box"><span>⌕</span><input id="skill-search" type="search" placeholder="搜索技能或专攻"></label>
-            <select id="skill-filter" aria-label="技能筛选"><option value="all">全部技能</option><option value="occupation">仅本职技能</option><option value="allocated">已有投入</option><option value="specialized">专攻技能</option></select>
-            <div class="table-legend"><span><i class="legend-star">★</i> 本职</span><span><i class="legend-spec">专</i> 专攻</span></div>
+            <label class="search-box"><span>⌕</span><input id="skill-search" type="search" placeholder="搜索技能或分项"></label>
+            <select id="skill-filter" aria-label="技能筛选"><option value="all">全部技能</option><option value="occupation">仅本职技能</option><option value="allocated">已有投入</option><option value="specialized">有分项的技能</option></select>
+            <button type="button" class="secondary-button" id="add-skill-branch">＋ 添加分支</button>
+            <div class="table-legend"><span><i class="legend-star">★</i> 本职</span></div>
           </div>
+          <p class="skill-group-help">点击大项展开，可继续添加多个分支并分别加点；括号内可选择或填写名称。</p>
 
           <div class="skill-table-wrap paper-card">
             <table class="skill-table">
@@ -396,6 +398,26 @@
       <p id="attribute-import-note">仅更新已填写的属性，空白项保留原值。</p>
       <div><button value="cancel" class="secondary-button" autofocus>取消</button><button type="button" class="primary-button" id="attribute-import-confirm">确认导入</button></div>
     </form>
+  </dialog>
+
+  <dialog id="skill-branch-dialog" aria-labelledby="skill-branch-title">
+    <form id="skill-branch-form" class="dialog-card skill-branch-dialog-card">
+      <h2 id="skill-branch-title">添加分支技能</h2>
+      <p>新分支会与已有分支共同显示，点数分别计算；每个人物最多新增 200 个。</p>
+      <label class="field"><span>技能大项</span><select id="skill-branch-group"></select></label>
+      <label class="field"><span>分支名称</span><input id="skill-branch-name" list="skill-branch-options" maxlength="80" required autocomplete="off" placeholder="选择常用分支，或填写自定义名称"></label>
+      <datalist id="skill-branch-options"></datalist>
+      <p>基础值：<strong id="skill-branch-base">—</strong></p>
+      <div><button type="button" class="secondary-button" id="skill-branch-cancel">取消</button><button type="submit" class="primary-button">添加分支</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="skill-branch-remove-dialog" aria-labelledby="skill-branch-remove-title">
+    <div class="dialog-card">
+      <h2 id="skill-branch-remove-title">删除这个分支？</h2>
+      <p id="skill-branch-remove-note"></p>
+      <div><button type="button" class="secondary-button" id="skill-branch-remove-cancel">取消</button><button type="button" class="danger-button" id="skill-branch-remove-confirm">删除分支</button></div>
+    </div>
   </dialog>
 
   <dialog id="reset-dialog">

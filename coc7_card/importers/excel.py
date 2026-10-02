@@ -11,18 +11,20 @@ import base64
 import io
 import posixpath
 import re
-import warnings as python_warnings
 import zipfile
 import zlib
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
 
 from lxml import etree as ET
-from PIL import Image
 
+from ..branch_workbook import BRANCH_FIRST_ROW, BRANCH_SCHEMA, BRANCH_SCHEMA_ROW, BRANCH_TITLE, branch_row, selection_title_row
 from ..catalog import TemplateCatalog, normalize_skill_name, split_occupation_skill_token
 from ..models import Attributes
+from ..portraits import prepare_portrait
 from ..rules import RuleEngine
+from ..skill_specializations import (GROUP_BASE_VALUES, MAX_SKILL_BRANCHES, canonical_specialization, is_branch_slot, matching_branch_slot, skill_group,
+                                      specialization_base_value, validate_branch_identity)
 
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
@@ -149,6 +151,9 @@ class _Workbook:
         cell = self.cells(sheet).get(address)
         if cell is None:
             return None
+        return self.cell_value(cell, address, sheet, report=report)
+
+    def cell_value(self, cell: ET._Element, address: str, sheet: str, *, report: bool = True):
         kind = cell.get("t", "n")
         value = cell.find(_tag("v"))
         if kind == "inlineStr":
@@ -237,7 +242,10 @@ def _skills(book: _Workbook, catalog: TemplateCatalog, attributes: dict) -> list
     attribute_values = Attributes.from_mapping(attributes)
     for definition in catalog.skills:
         mapping = catalog.skill_cell(definition.template_slot)
+        name = normalize_skill_name(book.text(mapping.name_cell)) or definition.name
+        specialization = book.text(mapping.specialization_cell)
         expected = RuleEngine.skill_base_value(definition.base_formula, attribute_values, definition.base_value)
+        expected = specialization_base_value(name, specialization or definition.default_specialization, expected)
         base = book.integer(mapping.base_cell, expected)
         formula = re.sub(r"[\s$]", "", book.formula(mapping.base_cell) or "").upper()
         # Known standard attribute references are recalculated by the existing
@@ -249,10 +257,9 @@ def _skills(book: _Workbook, catalog: TemplateCatalog, attributes: dict) -> list
         )
         if standard_formula:
             base = expected
-        name = normalize_skill_name(book.text(mapping.name_cell)) or definition.name
         row = {
             "key": definition.template_slot, "template_slot": definition.template_slot, "name": name,
-            "specialization": book.text(mapping.specialization_cell), "base_value": base,
+            "specialization": specialization, "base_value": base,
             "occupation_points": 0 if "克苏鲁神话" in name else book.integer(mapping.occupation_cell),
             "interest_points": 0 if "克苏鲁神话" in name else book.integer(mapping.interest_cell),
             "extra_final": book.integer(mapping.extra_cell),
@@ -276,8 +283,136 @@ def _skills(book: _Workbook, catalog: TemplateCatalog, attributes: dict) -> list
     return result
 
 
+
+def _branch_integer(book: _Workbook, address: str, *, maximum: int | None = None) -> int:
+    value = _number(book.value(address))
+    if value is None or value != value.to_integral_value() or value < 0 or maximum is not None and value > maximum:
+        raise ExcelImportError(f"新增技能补充区“人物卡!{address}”必须有已保存的非负整数，请核对并重算保存后导入。")
+    return int(value)
+
+
+def _branch_section(book: _Workbook) -> tuple[list[dict], list[tuple[str, str, str]] | None]:
+    schema = book.text(f"B{BRANCH_SCHEMA_ROW}", report=False)
+    if not schema and book.text("B151", report=False) != BRANCH_TITLE:
+        return [], None
+    if schema != BRANCH_SCHEMA:
+        raise ExcelImportError("新增技能补充区的版本标记缺失或不受支持，请保留补充区及导入恢复信息后重试。")
+    count = _branch_integer(book, f"AP{BRANCH_SCHEMA_ROW}", maximum=len(book.cells("人物卡")))
+    if count > MAX_SKILL_BRANCHES:
+        raise ExcelImportError(f"新增技能分支不能超过 {MAX_SKILL_BRANCHES} 个，请在原文件中调整后重新导入；当前人物未修改。")
+    if count < 1 or selection_title_row(count) > 1048576:
+        raise ExcelImportError("新增技能补充区的分支数量无效，请使用本工具导出的原始 XLSX。")
+    expected_identifiers = {f"F{branch_row(index) + 1}" for index in range(count)}
+    for address in book.cells("人物卡"):
+        match = re.fullmatch(r"F(\d+)", address)
+        if match and int(match[1]) >= BRANCH_FIRST_ROW and address not in expected_identifiers:
+            if book.text(address, report=False).startswith("branch-"):
+                raise ExcelImportError("新增技能补充区数量与分支标识记录不一致，请保留全部分支后重新导入。")
+    branches = []
+    identifiers = set()
+    for index in range(count):
+        row = branch_row(index)
+        try:
+            slot, name, specialization = validate_branch_identity(
+                book.text(f"F{row + 1}"), book.text(f"B{row}"), book.text(f"F{row}"),
+            )
+        except ValueError as exc:
+            raise ExcelImportError(f"新增技能补充区第 {index + 1} 项无法导入：{exc}") from exc
+        if slot in identifiers:
+            raise ExcelImportError("新增技能补充区包含重复分支标识，请恢复每个分支的独立标识后导入。")
+        identifiers.add(slot)
+        base = _branch_integer(book, f"R{row}", maximum=999)
+        flag = book.text(f"AP{row}")
+        if flag not in {"", "★"}:
+            raise ExcelImportError(f"新增技能补充区“人物卡!AP{row}”本职标志应为空白或 ★。")
+        skill = {
+            "key": slot, "template_slot": slot, "name": name, "specialization": specialization,
+            "base_value": base,
+            "occupation_points": _branch_integer(book, f"U{row}"),
+            "interest_points": _branch_integer(book, f"X{row}"),
+            "experience_points": _branch_integer(book, f"AA{row}"),
+            "extra_final": _branch_integer(book, f"AD{row}"),
+            "selected_occupation": flag == "★",
+        }
+        expected = specialization_base_value(name, specialization, GROUP_BASE_VALUES[name])
+        if base != expected:
+            skill["base_override"] = base
+        branches.append(skill)
+    metadata_row = selection_title_row(count)
+    if book.text(f"B{metadata_row}") != "导入恢复信息（请保留）":
+        raise ExcelImportError("新增技能的职业选择恢复信息缺失，请保留导出文件中的补充区域后重试。")
+    record_count = _branch_integer(book, f"AP{metadata_row}", maximum=len(book.cells("人物卡")))
+    if metadata_row + record_count > 1048576:
+        raise ExcelImportError("新增技能的职业选择恢复记录数量无效。")
+    for address in book.cells("人物卡"):
+        match = re.fullmatch(r"B(\d+)", address)
+        if match and int(match[1]) > metadata_row + record_count:
+            if book.text(address, report=False) in {"custom", "free", "group"}:
+                raise ExcelImportError("新增技能的职业选择记录数量不完整，请保留全部恢复信息后重新导入。")
+    records = [(book.text(f"B{row}"), book.text(f"F{row}"), book.text(f"J{row}"))
+               for row in range(metadata_row + 1, metadata_row + record_count + 1)]
+    if len(records) != len(set(records)):
+        raise ExcelImportError("新增技能的职业选择恢复信息包含重复记录，请核对后重新导入。")
+    return branches, records
+
+
+
+def _validate_imported_branch_names(skills: list[dict]) -> None:
+    seen = {}
+    for skill in skills:
+        group = skill_group(skill["name"])
+        specialization = skill["specialization"].strip()
+        if not group or not specialization:
+            continue
+        identity = group, canonical_specialization(group, specialization)
+        branch = is_branch_slot(skill["template_slot"])
+        if identity in seen and (branch or seen[identity]):
+            raise ExcelImportError(f"新增技能“{group}（{specialization}）”与已有分项重名，请使用独立名称后重新导入。")
+        seen[identity] = branch
+
+
+def _restore_branch_selections(draft: dict, catalog: TemplateCatalog,
+                               records: list[tuple[str, str, str]], branches: list[dict]) -> None:
+    skills = draft["skills"]
+    known = {skill["template_slot"] for skill in skills}
+    custom, free, groups = [], [], {}
+    for kind, marker, value in records:
+        if kind in {"custom", "free"} and not marker and value in known and (kind == "free" or value != "F26"):
+            (custom if kind == "custom" else free).append(value)
+        elif kind == "group" and marker and value:
+            groups.setdefault(marker, []).append(value)
+        else:
+            raise ExcelImportError("新增技能的职业选择恢复记录无效，技能标识必须对应原技能或补充分支。")
+    if draft["occupation_mode"] == "custom":
+        if free or groups or len(custom) > 8:
+            raise ExcelImportError("自定义职业的技能恢复记录无效：最多八项本职技能，不能同时包含目录职业选择。")
+        draft["custom_skill_slots"] = custom
+        selected = set(custom) | {"F26"}
+    else:
+        occupation = catalog.occupation_by_id(draft["occupation_id"])
+        definitions = {group.marker: group for group in occupation.choice_groups}
+        if custom or len(free) > occupation.free_choices or any(
+            marker not in definitions or len(choices) > definitions[marker].required_count
+            or any(token not in definitions[marker].candidates for token in choices)
+            for marker, choices in groups.items()
+        ):
+            raise ExcelImportError("目录职业的技能恢复记录与所选职业不一致，请核对职业与补充区后重新导入。")
+        draft["free_skill_choices"] = free
+        draft["group_choices"] = groups
+        selected = {"F26", *free}
+        for token in [*occupation.fixed_skills, *(token for choices in groups.values() for token in choices)]:
+            selected.update(_matching_slots(token, skills)[:1])
+    if any(skill["selected_occupation"] != (skill["template_slot"] in selected) for skill in branches):
+        raise ExcelImportError("新增技能的本职标志与职业选择恢复信息不一致，请同步核对后重新导入。")
+    for skill in skills:
+        skill["selected_occupation"] = skill["template_slot"] in selected
+
+
 def _matching_slots(token: str, skills: list[dict]) -> list[str]:
     name, specialization = split_occupation_skill_token(token)
+    branch = matching_branch_slot(name, specialization, skills)
+    if branch is not None:
+        return [branch]
     return [skill["template_slot"] for skill in skills if normalize_skill_name(skill["name"]) == name and (not specialization or not skill["specialization"] or skill["specialization"] == specialization)]
 
 
@@ -294,6 +429,10 @@ def _occupation(book: _Workbook, catalog: TemplateCatalog, draft: dict) -> None:
     marked = set()
     for skill in skills:
         slot = skill["template_slot"]
+        if is_branch_slot(slot):
+            if skill["selected_occupation"] or skill["occupation_points"] > 0:
+                marked.add(slot)
+            continue
         flag = book.text(("D" if slot.startswith("F") else "Z") + re.search(r"\d+", slot)[0], report=False)
         if flag in {"★", "√", "☒", "1"} or skill["occupation_points"] > 0:
             marked.add(slot)
@@ -505,19 +644,14 @@ def _portrait(book: _Workbook) -> dict | None:
         book.warn("表格头像超过 8 MB，未导入，请手动上传较小图片。")
         return None
     try:
-        with python_warnings.catch_warnings():
-            python_warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(io.BytesIO(raw)) as source:
-                if source.width * source.height > 20_000_000 or source.format not in {"PNG", "JPEG", "GIF", "WEBP", "BMP"}:
-                    raise ValueError("Unsupported portrait")
-                source.load()
-                output = io.BytesIO()
-                source.convert("RGBA").save(output, format="PNG")
+        with prepare_portrait(raw, allow_legacy=True) as source:
+            output = io.BytesIO()
+            source.save(output, format="PNG")
         image_data = output.getvalue()
         if len(image_data) > 8 * 1024 * 1024:
             raise ValueError("Portrait too large")
         return {"filename": "调查员头像.png", "mime_type": "image/png", "data_base64": base64.b64encode(image_data).decode("ascii")}
-    except (OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning):
+    except (OSError, ValueError):
         book.warn("表格头像格式或尺寸不受支持，头像未导入，请手动上传。")
         return None
 
@@ -531,7 +665,12 @@ def import_investigator(data: bytes, catalog: TemplateCatalog) -> dict:
         identity, attributes = _identity(book)
         draft = {"version": 3, "current_step": 0, "identity": identity, "attributes": attributes,
                  "nonstandard_override": False, "skills": _skills(book, catalog, attributes)}
+        branches, selections = _branch_section(book)
+        draft["skills"].extend(dict(skill) for skill in branches)
+        _validate_imported_branch_names(draft["skills"])
         _occupation(book, catalog, draft)
+        if selections is not None:
+            _restore_branch_selections(draft, catalog, selections, branches)
         draft["experience"] = _experience(book, catalog)
         derived = RuleEngine.calculate(Attributes.from_mapping(attributes), identity["age"], "EDU*4", draft["experience"]["san_loss"])
         changed_status = []
